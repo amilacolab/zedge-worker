@@ -2,10 +2,8 @@
 
 const { Pool } = require('pg');
 const puppeteer = require('puppeteer');
-
-// IMPORTANT: Your Supabase Connection URI
-const CONNECTION_STRING = 'postgresql://postgres:[Vaz20#31204]@db.ciiiywygdenrdfspevrh.supabase.co:5432/postgres';
-
+require('dotenv').config();
+const CONNECTION_STRING = process.env.CONNECTION_STRING;
 const pool = new Pool({
     connectionString: CONNECTION_STRING,
 });
@@ -195,10 +193,22 @@ async function performPublish(scheduledItem) {
     }
 }
 
+const http = require('http');
+
+const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Publisher worker is alive.\n');
+});
+
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`);
+    // Start the main worker logic ONLY after the server is running
+    startWorker();
+});
+
 // This is the main loop that will run continuously on the server.
 function startWorker() {
     console.log('Zedge Worker started. Checking for scheduled posts every 60 seconds.');
     setInterval(checkScheduleForPublishing, 60 * 1000); // 60 seconds
 }
-
-startWorker();
