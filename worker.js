@@ -6,20 +6,16 @@ const fs = require('fs');
 const https = require('https');
 const discordBot = require('./bot.js');
 
-// --- THIS IS THE CORRECTED DATABASE CONNECTION BLOCK ---
-// It reads the full URL from your Render environment variable
 const CONNECTION_STRING = process.env.CONNECTION_STRING;
 
+// CORRECTED: Added the SSL requirement for Neon
 const pool = new Pool({
     connectionString: CONNECTION_STRING,
     ssl: {
         require: true,
     },
 });
-// ----------------------------------------------------
 
-
-// Main Login Status Check function
 async function checkLoginStatus() {
     console.log('Performing Zedge login status check...');
     let browser;
@@ -32,7 +28,6 @@ async function checkLoginStatus() {
         const context = await browser.newContext({ storageState });
         const page = await context.newPage();
         await page.goto('https://upload.zedge.net/', { waitUntil: 'domcontentloaded' });
-
         const finalUrl = page.url();
         if (finalUrl.includes('account.zedge.net')) {
             return { loggedIn: false, error: 'Session is invalid or expired.' };
@@ -42,13 +37,10 @@ async function checkLoginStatus() {
         console.error('Error during login check:', error);
         return { loggedIn: false, error: error.message };
     } finally {
-        if (browser) {
-            await browser.close();
-        }
+        if (browser) { await browser.close(); }
     }
 }
 
-// Simple webhook notification function
 function sendDiscordNotification(message) {
     const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
     if (!webhookUrl || !message) return;
@@ -208,7 +200,13 @@ const server = http.createServer((req, res) => {
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
-    discordBot.startBot(process.env.DISCORD_BOT_TOKEN);
+    
+    // CORRECTED: Pass the functions the bot needs when it starts
+    discordBot.startBot(process.env.DISCORD_BOT_TOKEN, {
+        loadDataFunc: loadData,
+        loginCheckFunc: checkLoginStatus
+    });
+    
     startWorker();
 });
 

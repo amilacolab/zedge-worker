@@ -1,20 +1,16 @@
-// bot.js - FINAL COMBINED VERSION
+// bot.js
 
 const { Client, GatewayIntentBits } = require('discord.js');
-const { loadData, checkLoginStatus } = require('./worker.js'); // Import functions from worker.js
 
 let client;
+let workerFunctions = {};
 
-// This function will be called from worker.js to start the bot
-function startBot(token) {
+function startBot(token, dependencies) {
     if (!token) {
         console.log('Discord Bot Token not provided, bot will not start.');
         return;
     }
-    if (client && client.ws.status === 0) {
-        console.log('Bot is already running.');
-        return;
-    }
+    workerFunctions = dependencies;
 
     client = new Client({
         intents: [
@@ -30,7 +26,6 @@ function startBot(token) {
 
     client.on('messageCreate', async message => {
         if (message.author.bot || !message.content.startsWith('!')) return;
-
         const args = message.content.slice(1).trim().split(/ +/);
         const command = args.shift().toLowerCase();
 
@@ -51,13 +46,12 @@ function startBot(token) {
     });
 }
 
-// Fetches live data to show upcoming schedule
 async function handleScheduleCommand(message) {
-    const currentData = await loadData();
+    if (typeof workerFunctions.loadDataFunc !== 'function') return message.reply('Error: data functions not available.');
+    const currentData = await workerFunctions.loadDataFunc();
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const upcomingItems = [];
-
     if (currentData.schedule) {
         Object.keys(currentData.schedule).sort().forEach(dateKey => {
             const date = new Date(dateKey + 'T00:00:00');
@@ -73,7 +67,6 @@ async function handleScheduleCommand(message) {
             }
         });
     }
-
     if (upcomingItems.length > 0) {
         message.channel.send(`**Upcoming Scheduled Items:**\n${upcomingItems.slice(0, 15).join('\n')}`);
     } else {
@@ -81,17 +74,15 @@ async function handleScheduleCommand(message) {
     }
 }
 
-// Fetches live data to search for a title's status
 async function handleStatusCommand(message, args) {
+    if (typeof workerFunctions.loadDataFunc !== 'function') return message.reply('Error: data functions not available.');
     const query = args.join(' ').toLowerCase();
     if (!query) {
         message.channel.send('Please provide a title to search for. Usage: `!status <title query>`');
         return;
     }
-    
-    const currentData = await loadData();
+    const currentData = await workerFunctions.loadDataFunc();
     const matches = [];
-
     if (currentData.schedule) {
         Object.keys(currentData.schedule).forEach(dateKey => {
             Object.keys(currentData.schedule[dateKey]).forEach(timeKey => {
@@ -103,7 +94,6 @@ async function handleStatusCommand(message, args) {
             });
         });
     }
-
     if (matches.length > 0) {
         message.channel.send(`**Found ${matches.length} match(es) for "${query}":**\n${matches.slice(0, 15).join('\n')}`);
     } else {
@@ -111,10 +101,10 @@ async function handleStatusCommand(message, args) {
     }
 }
 
-// Checks the live login status of the worker
 async function handleLoginStatusCommand(message) {
+    if (typeof workerFunctions.loginCheckFunc !== 'function') return message.reply('Error: status check function not available.');
     message.reply('Checking Zedge login status, please wait...');
-    const result = await checkLoginStatus();
+    const result = await workerFunctions.loginCheckFunc();
     if (result.loggedIn) {
         message.reply('✅ **Zedge Status:** Currently Logged In.');
     } else {
@@ -122,7 +112,6 @@ async function handleLoginStatusCommand(message) {
     }
 }
 
-// Shows all available commands
 function handleHelpCommand(message) {
     const helpMessage = [
         "**Zedge Worker Bot Commands:**",
@@ -133,6 +122,5 @@ function handleHelpCommand(message) {
     ].join('\n');
     message.channel.send(helpMessage);
 }
-
 
 module.exports = { startBot };
