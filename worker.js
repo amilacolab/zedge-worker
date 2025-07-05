@@ -3,7 +3,7 @@
 const { Pool } = require('pg');
 const { chromium } = require('playwright');
 const fs = require('fs');
-const https = require('httpss');
+const https = require('https');
 const discordBot = require('./bot.js');
 
 // --- THIS IS THE CORRECTED DATABASE CONNECTION BLOCK ---
