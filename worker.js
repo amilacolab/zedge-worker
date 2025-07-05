@@ -119,52 +119,40 @@ let isQueueProcessing = false;
 // In worker.js, REPLACE the checkScheduleForPublishing function
 
 async function checkScheduleForPublishing() {
-    console.log('--- Running background check ---'); // New log
+    console.log('--- Running background check ---');
     const data = await loadData();
 
-    if (data.settings && data.settings.isAutoPublishingEnabled) {
+    if (data.settings?.isAutoPublishingEnabled) {
         console.log('Desktop auto-publishing is active. Cloud worker is standing by.');
         return;
     }
 
-    if (!data.schedule || Object.keys(data.schedule).length === 0) {
-        // This is normal if nothing is scheduled. No need to log every minute.
-        return;
+    if (!data.schedule || data.schedule.length === 0) {
+        return; // No items scheduled
     }
 
-    const now = new Date();
-    console.log(`Server time (UTC): ${now.toISOString()}`); // New log
+    const now = new Date(); // Current UTC time
+    console.log(`Server time (UTC): ${now.toISOString()}`);
 
-    let itemsFound = 0;
+    for (const item of data.schedule) {
+        if (!item.scheduledAtUTC) continue;
 
-    for (const dateKey in data.schedule) {
-        for (const timeKey in data.schedule[dateKey]) {
-            for (const item of data.schedule[dateKey][timeKey]) {
-                if (!item.scheduledAtUTC) continue;
+        const scheduleDateTime = new Date(item.scheduledAtUTC);
+        const isDue = now >= scheduleDateTime;
+        const isPending = !item.status || item.status === 'Pending';
 
-                const scheduleDateTime = new Date(item.scheduledAtUTC);
-                const isDue = now >= scheduleDateTime;
-                const isPending = !item.status || item.status === 'Pending';
-                
-                // New detailed log for every item it checks
-                console.log(`Checking: "${item.title}" | Scheduled (UTC): ${scheduleDateTime.toISOString()} | Is Due: ${isDue}`);
+        console.log(`Checking: "${item.title}" | Scheduled (UTC): ${scheduleDateTime.toISOString()} | Is Due: ${isDue}`);
 
-                if (isDue && isPending && !publishingInProgress.has(item.id)) {
-                    itemsFound++;
-                    console.log(`✅ FOUND DUE ITEM: "${item.title}". Adding to queue.`); // New log
-                    publishingInProgress.add(item.id);
-                    publishingQueue.push(item);
-                    if (!isQueueProcessing) {
-                        processPublishingQueue();
-                    }
-                }
+        if (isDue && isPending && !publishingInProgress.has(item.id)) {
+            console.log(`✅ FOUND DUE ITEM: "${item.title}". Adding to queue.`);
+            publishingInProgress.add(item.id);
+            publishingQueue.push(item);
+            if (!isQueueProcessing) {
+                processPublishingQueue();
             }
         }
     }
-    
-    if(itemsFound === 0) {
-        console.log('No due items found in this check.'); // New log
-    }
+    console.log('Finished check.');
 }
 
 async function processPublishingQueue() {
@@ -187,19 +175,17 @@ async function executePublishWorkflow(scheduledItem) {
     const result = await performPublish(scheduledItem);
     const appData = await loadData();
     try {
-        const dateKey = scheduledItem.scheduledAtUTC.split('T')[0];
-        const timekey = scheduledItem.scheduledAtUTC.split('T')[1];
-        if (appData.schedule?.[dateKey]?.[timeKey]) {
-            const itemToUpdate = appData.schedule[dateKey][timeKey].find(i => i.id === scheduledItem.id);
-            if (itemToUpdate) {
-                itemToUpdate.status = result.status === 'success' ? 'Published' : 'Failed';
-                itemToUpdate.failMessage = result.message;
+        if (appData.schedule) {
+            const itemIndex = appData.schedule.findIndex(i => i.id === scheduledItem.id);
+            if (itemIndex > -1) {
+                appData.schedule[itemIndex].status = result.status === 'success' ? 'Published' : 'Failed';
+                appData.schedule[itemIndex].failMessage = result.message;
                 await saveData(appData);
-                if (result.status === 'success') {
-                    sendDiscordNotification(`✅ Successfully published: "${scheduledItem.title}"`);
-                } else {
-                    sendDiscordNotification(`❌ Failed to publish: "${scheduledItem.title}".\nReason: ${result.message}`);
-                }
+                
+                const notificationMessage = result.status === 'success' 
+                    ? `✅ Successfully published: "${scheduledItem.title}"`
+                    : `❌ Failed to publish: "${scheduledItem.title}".\nReason: ${result.message}`;
+                sendDiscordNotification(notificationMessage);
             }
         }
     } catch (e) {
