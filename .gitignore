@@ -1,0 +1,9 @@
+# Node.js dependencies
+node_modules
+
+# User-generated session and profile data
+session.json
+zedge_user_data/
+
+# Local environment files
+.env

@@ -1,5 +1,5 @@
 // worker.js - FINAL VERSION
-
+const fs = require('fs');
 const { Pool } = require('pg');
 const { chromium } = require('playwright');
 require('dotenv').config();
@@ -131,14 +131,20 @@ async function executePublishWorkflow(scheduledItem) {
     return result;
 }
 
+// In worker.js, REPLACE the old performPublish function with this one.
 async function performPublish(scheduledItem) {
     console.log(`--- Starting publish process for: "${scheduledItem.title}" ---`);
     let browser;
     try {
-        // Launch a new browser instance using Playwright
+        // Check if the session file exists before using it
+        const storageState = fs.existsSync('session.json') ? 'session.json' : undefined;
+
         browser = await chromium.launch();
-        const context = await browser.newContext();
+        // Create a context with the saved login state
+        const context = await browser.newContext({ storageState });
         const page = await context.newPage();
+
+        // ... the rest of the function remains exactly the same
 
         const ZEDGE_PROFILES = {
             Normal: 'https://upload.zedge.net/business/4e5d55ef-ea99-4913-90cf-09431dc1f28f/profiles/0c02b238-4bd0-479e-91f7-85c6df9c8b0f/content/WALLPAPER',
