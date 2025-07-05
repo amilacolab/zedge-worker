@@ -198,6 +198,8 @@ async function executePublishWorkflow(scheduledItem) {
 
 // In worker.js, REPLACE the entire performPublish function with this one:
 
+// In worker.js, REPLACE the entire performPublish function with this one:
+
 async function performPublish(scheduledItem) {
     console.log(`--- Starting publish process for: "${scheduledItem.title}" ---`);
     let browser;
@@ -206,11 +208,23 @@ async function performPublish(scheduledItem) {
         browser = await chromium.launch();
         const context = await browser.newContext({ storageState });
         const page = await context.newPage();
+
+        // --- OPTIMIZATION: Block unnecessary resources ---
+        await page.route('**/*', (route) => {
+            const resourceType = route.request().resourceType();
+            if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+                route.abort();
+            } else {
+                route.continue();
+            }
+        });
+        // --- END OF OPTIMIZATION ---
         
         const ZEDGE_PROFILES = {
             Normal: 'https://upload.zedge.net/business/4e5d55ef-ea99-4913-90cf-09431dc1f28f/profiles/0c02b238-4bd0-479e-91f7-85c6df9c8b0f/content/WALLPAPER',
             Black: 'https://upload.zedge.net/business/4e5d55ef-ea99-4913-90cf-09431dc1f28f/profiles/a90052da-0ec5-4877-a73f-034c6da5d45a/content/WALLPAPER'
         };
+        
         const theme = scheduledItem.theme || '';
         const targetProfileName = theme.toLowerCase().includes('black') ? 'Black' : 'Normal';
         const targetProfileUrl = ZEDGE_PROFILES[targetProfileName];
@@ -319,6 +333,7 @@ async function performPublish(scheduledItem) {
 
         console.log(`--- Successfully published and verified "${scheduledItem.title}" ---`);
         return { status: 'success', message: 'Published and verified successfully.' };
+
     } catch (error) {
         console.error(`Failed to publish "${scheduledItem.title}":`, error);
         return { status: 'failed', message: error.message };
