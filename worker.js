@@ -3,6 +3,11 @@
 const { Pool } = require('pg');
 const { chromium } = require('playwright');
 require('dotenv').config();
+
+console.log('--- DEBUGGING ---');
+console.log('Value of CONNECTION_STRING:', process.env.CONNECTION_STRING);
+console.log('--- END DEBUGGING ---');
+
 const CONNECTION_STRING = process.env.CONNECTION_STRING;
 const pool = new Pool({
     connectionString: CONNECTION_STRING,
