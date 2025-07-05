@@ -116,8 +116,10 @@ let publishingQueue = [];
 let isQueueProcessing = false;
 
 // In worker.js, replace the checkScheduleForPublishing function
+// In worker.js, REPLACE the checkScheduleForPublishing function
+
 async function checkScheduleForPublishing() {
-    console.log('Running background check for scheduled items to publish...');
+    console.log('--- Running background check ---'); // New log
     const data = await loadData();
 
     if (data.settings && data.settings.isAutoPublishingEnabled) {
@@ -125,33 +127,43 @@ async function checkScheduleForPublishing() {
         return;
     }
 
-    if (!data.schedule) {
-        console.log("No schedule found in database.");
+    if (!data.schedule || Object.keys(data.schedule).length === 0) {
+        // This is normal if nothing is scheduled. No need to log every minute.
         return;
     }
 
-    const now = new Date(); // Current time in UTC on the server
+    const now = new Date();
+    console.log(`Server time (UTC): ${now.toISOString()}`); // New log
+
+    let itemsFound = 0;
 
     for (const dateKey in data.schedule) {
         for (const timeKey in data.schedule[dateKey]) {
             for (const item of data.schedule[dateKey][timeKey]) {
-                // NEW: Check for the UTC timestamp
                 if (!item.scheduledAtUTC) continue;
 
                 const scheduleDateTime = new Date(item.scheduledAtUTC);
                 const isDue = now >= scheduleDateTime;
                 const isPending = !item.status || item.status === 'Pending';
+                
+                // New detailed log for every item it checks
+                console.log(`Checking: "${item.title}" | Scheduled (UTC): ${scheduleDateTime.toISOString()} | Is Due: ${isDue}`);
 
                 if (isDue && isPending && !publishingInProgress.has(item.id)) {
+                    itemsFound++;
+                    console.log(`✅ FOUND DUE ITEM: "${item.title}". Adding to queue.`); // New log
                     publishingInProgress.add(item.id);
-                    // We pass the full item, which now includes the UTC timestamp
-                    publishingQueue.push(item); 
+                    publishingQueue.push(item);
                     if (!isQueueProcessing) {
                         processPublishingQueue();
                     }
                 }
             }
         }
+    }
+    
+    if(itemsFound === 0) {
+        console.log('No due items found in this check.'); // New log
     }
 }
 
