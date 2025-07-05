@@ -1,40 +1,85 @@
-// worker.js - FINAL VERSION
-const fs = require('fs');
+// worker.js - FINAL CORRECTED VERSION
+
 const { Pool } = require('pg');
 const { chromium } = require('playwright');
-require('dotenv').config();
+const fs = require('fs');
+const https = require('httpss');
+const discordBot = require('./bot.js');
 
-console.log('--- DEBUGGING ---');
-console.log('Value of CONNECTION_STRING:', process.env.CONNECTION_STRING);
-console.log('--- END DEBUGGING ---');
-
+// --- THIS IS THE CORRECTED DATABASE CONNECTION BLOCK ---
+// It reads the full URL from your Render environment variable
 const CONNECTION_STRING = process.env.CONNECTION_STRING;
+
 const pool = new Pool({
     connectionString: CONNECTION_STRING,
+    ssl: {
+        require: true,
+    },
 });
+// ----------------------------------------------------
 
-async function loadData() {
-    console.log('Fetching latest data from cloud database...');
-    let client;
+
+// Main Login Status Check function
+async function checkLoginStatus() {
+    console.log('Performing Zedge login status check...');
+    let browser;
     try {
-        client = await pool.connect();
-        const result = await client.query('SELECT data FROM app_data WHERE id = 1');
-        if (result.rows.length > 0) {
-            return result.rows[0].data;
+        const storageState = fs.existsSync('session.json') ? 'session.json' : undefined;
+        if (!storageState) {
+            return { loggedIn: false, error: 'session.json file not found on server.' };
         }
-        return {}; // Return empty object if no data found
-    } catch (err) {
-        console.error('Error loading data from database', err);
-        return {}; // Return empty object on error
+        browser = await chromium.launch();
+        const context = await browser.newContext({ storageState });
+        const page = await context.newPage();
+        await page.goto('https://upload.zedge.net/', { waitUntil: 'domcontentloaded' });
+
+        const finalUrl = page.url();
+        if (finalUrl.includes('account.zedge.net')) {
+            return { loggedIn: false, error: 'Session is invalid or expired.' };
+        }
+        return { loggedIn: true };
+    } catch (error) {
+        console.error('Error during login check:', error);
+        return { loggedIn: false, error: error.message };
     } finally {
-        if (client) {
-            client.release();
+        if (browser) {
+            await browser.close();
         }
     }
 }
 
+// Simple webhook notification function
+function sendDiscordNotification(message) {
+    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+    if (!webhookUrl || !message) return;
+    try {
+        const payload = JSON.stringify({ content: message });
+        const options = { hostname: 'discord.com', path: new URL(webhookUrl).pathname, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } };
+        const req = https.request(options);
+        req.on('error', (e) => console.error('Discord notification error:', e.message));
+        req.write(payload);
+        req.end();
+    } catch (e) {
+        console.error('Invalid Webhook URL:', e.message);
+    }
+}
+
+async function loadData() {
+    let client;
+    try {
+        client = await pool.connect();
+        const result = await client.query('SELECT data FROM app_data WHERE id = 1');
+        if (result.rows.length > 0) { return result.rows[0].data; }
+        return {};
+    } catch (err) {
+        console.error('Error loading data from database', err);
+        return {};
+    } finally {
+        if (client) { client.release(); }
+    }
+}
+
 async function saveData(appData) {
-    console.log('Saving data to cloud database...');
     let client;
     try {
         client = await pool.connect();
@@ -42,9 +87,7 @@ async function saveData(appData) {
     } catch (err) {
         console.error('Error saving data to database', err);
     } finally {
-        if (client) {
-            client.release();
-        }
+        if (client) { client.release(); }
     }
 }
 
@@ -55,27 +98,18 @@ let isQueueProcessing = false;
 async function checkScheduleForPublishing() {
     console.log('Running background check for scheduled items to publish...');
     const data = await loadData();
+    if (!data.schedule) { console.log("No schedule found in database."); return; }
     const now = new Date();
-
-    if (!data.schedule) {
-        console.log("No schedule found in database.");
-        return;
-    }
-    
     for (const dateKey in data.schedule) {
         for (const timeKey in data.schedule[dateKey]) {
-            const items = data.schedule[dateKey][timeKey];
-            for (const item of items) {
+            for (const item of data.schedule[dateKey][timeKey]) {
                 const scheduleDateTime = new Date(`${dateKey}T${timeKey}`);
                 const isDue = now >= scheduleDateTime;
                 const isPending = !item.status || item.status === 'Pending';
                 if (isDue && isPending && !publishingInProgress.has(item.id)) {
                     publishingInProgress.add(item.id);
-                    console.log(`Found due item: "${item.title}". Adding to publish queue.`);
                     publishingQueue.push({ ...item, date: `${dateKey}T${timeKey}` });
-                    if (!isQueueProcessing) {
-                        processPublishingQueue();
-                    }
+                    if (!isQueueProcessing) { processPublishingQueue(); }
                 }
             }
         }
@@ -85,127 +119,87 @@ async function checkScheduleForPublishing() {
 async function processPublishingQueue() {
     if (isQueueProcessing || publishingQueue.length === 0) return;
     isQueueProcessing = true;
-    console.log(`--- Starting to process publish queue with ${publishingQueue.length} item(s). ---`);
     while (publishingQueue.length > 0) {
-        const itemToPublish = publishingQueue.shift(); 
-        console.log(`--> Now publishing: "${itemToPublish.title}"`);
+        const itemToPublish = publishingQueue.shift();
         try {
             await executePublishWorkflow(itemToPublish);
         } catch (error) {
-            console.error(`A critical error occurred in the queue processor for item "${itemToPublish.title}"`, error);
+            console.error(`A critical error occurred for item "${itemToPublish.title}"`, error);
         } finally {
             publishingInProgress.delete(itemToPublish.id);
-            console.log(`<-- Finished processing: "${itemToPublish.title}"`);
         }
     }
     isQueueProcessing = false;
-    console.log('--- Publish queue is now empty. ---');
 }
 
 async function executePublishWorkflow(scheduledItem) {
-    // Perform the publishing task
     const result = await performPublish(scheduledItem);
-    
-    // After publishing, load the entire dataset to update it
     const appData = await loadData();
-
     try {
         const dateKey = scheduledItem.date.split('T')[0];
         const timeKey = scheduledItem.date.split('T')[1];
-        if (appData.schedule && appData.schedule[dateKey] && appData.schedule[dateKey][timeKey]) {
+        if (appData.schedule?.[dateKey]?.[timeKey]) {
             const itemToUpdate = appData.schedule[dateKey][timeKey].find(i => i.id === scheduledItem.id);
             if (itemToUpdate) {
                 itemToUpdate.status = result.status === 'success' ? 'Published' : 'Failed';
                 itemToUpdate.failMessage = result.message;
-                
-                // Save the modified appData object back to the database
-                await saveData(appData); 
-                console.log(`Updated database for "${scheduledItem.title}" with status: ${itemToUpdate.status}`);
+                await saveData(appData);
+                if (result.status === 'success') {
+                    sendDiscordNotification(`✅ Successfully published: "${scheduledItem.title}"`);
+                } else {
+                    sendDiscordNotification(`❌ Failed to publish: "${scheduledItem.title}".\nReason: ${result.message}`);
+                }
             }
         }
     } catch (e) {
         console.error('Failed to update database after publishing:', e);
     }
-
-    // We can add Discord notifications back in later. For now, we are focusing on publishing.
     return result;
 }
 
-// In worker.js, REPLACE the old performPublish function with this one.
 async function performPublish(scheduledItem) {
-    console.log(`--- Starting publish process for: "${scheduledItem.title}" ---`);
     let browser;
     try {
-        // Check if the session file exists before using it
         const storageState = fs.existsSync('session.json') ? 'session.json' : undefined;
-
         browser = await chromium.launch();
-        // Create a context with the saved login state
         const context = await browser.newContext({ storageState });
         const page = await context.newPage();
-
-        // ... the rest of the function remains exactly the same
-
         const ZEDGE_PROFILES = {
             Normal: 'https://upload.zedge.net/business/4e5d55ef-ea99-4913-90cf-09431dc1f28f/profiles/0c02b238-4bd0-479e-91f7-85c6df9c8b0f/content/WALLPAPER',
             Black: 'https://upload.zedge.net/business/4e5d55ef-ea99-4913-90cf-09431dc1f28f/profiles/a90052da-0ec5-4877-a73f-034c6da5d45a/content/WALLPAPER'
         };
-
         const theme = scheduledItem.theme || '';
         const targetProfileName = theme.toLowerCase().includes('black') ? 'Black' : 'Normal';
         const targetProfileUrl = ZEDGE_PROFILES[targetProfileName];
         if (!targetProfileUrl) throw new Error(`Could not determine a valid profile URL for theme: "${theme}"`);
-
-        console.log(`Loading profile: ${targetProfileName} at ${targetProfileUrl}`);
         await page.goto(targetProfileUrl, { waitUntil: 'networkidle' });
-
-        console.log(`Searching for DRAFT: "${scheduledItem.title}"`);
         const foundAndClicked = await page.evaluate((title) => {
             const elements = document.querySelectorAll('div[class*="StyledTitle"], div[title], span');
             for (const el of elements) {
                 if (el.textContent.trim() === title || el.getAttribute('title') === title) {
                     const clickableParent = el.closest('div[role="button"], a');
-                    if (clickableParent) {
-                        clickableParent.click();
-                        return true;
-                    }
+                    if (clickableParent) { clickableParent.click(); return true; }
                 }
             }
             return false;
         }, scheduledItem.title);
-
         if (!foundAndClicked) throw new Error(`Could not find a DRAFT with the title "${scheduledItem.title}"`);
-
-        console.log("Found DRAFT, clicking it. Waiting for details page.");
         await page.waitForTimeout(8000);
-
         const clickedPublish = await page.evaluate(() => {
             const publishButton = Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.trim().toLowerCase() === 'publish');
-            if (publishButton && !publishButton.disabled) {
-                publishButton.click();
-                return true;
-            }
+            if (publishButton && !publishButton.disabled) { publishButton.click(); return true; }
             return false;
         });
-
-        if (!clickedPublish) throw new Error('The "Publish" button was not found or was disabled on the details page.');
-        console.log("Clicked 'Publish'.");
-
-        console.log(`--- Successfully published: "${scheduledItem.title}" ---`);
+        if (!clickedPublish) throw new Error('The "Publish" button was not found or was disabled.');
         return { status: 'success', message: 'Published successfully.' };
-
     } catch (error) {
-        console.error(`Failed to publish "${scheduledItem.title}":`, error);
         return { status: 'failed', message: error.message };
     } finally {
-        if (browser) {
-            await browser.close();
-        }
+        if (browser) { await browser.close(); }
     }
 }
 
 const http = require('http');
-
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Publisher worker is alive.\n');
@@ -214,12 +208,22 @@ const server = http.createServer((req, res) => {
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
-    // Start the main worker logic ONLY after the server is running
+    discordBot.startBot(process.env.DISCORD_BOT_TOKEN);
     startWorker();
 });
 
-// This is the main loop that will run continuously on the server.
 function startWorker() {
-    console.log('Zedge Worker started. Checking for scheduled posts every 60 seconds.');
-    setInterval(checkScheduleForPublishing, 60 * 1000); // 60 seconds
+    console.log('Zedge Worker started.');
+    setInterval(checkScheduleForPublishing, 60 * 1000); 
+    setInterval(async () => {
+        const status = await checkLoginStatus();
+        if (!status.loggedIn) {
+            sendDiscordNotification(`🔴 **Action Required:** The Zedge worker has been logged out. Please run the local login script and update the session file. Reason: ${status.error}`);
+        }
+    }, 6 * 60 * 60 * 1000);
 }
+
+module.exports = {
+    loadData,
+    checkLoginStatus
+};
