@@ -1,7 +1,7 @@
 // worker.js - FINAL VERSION
 
 const { Pool } = require('pg');
-const puppeteer = require('puppeteer');
+const { chromium } = require('playwright');
 require('dotenv').config();
 const CONNECTION_STRING = process.env.CONNECTION_STRING;
 const pool = new Pool({
@@ -130,10 +130,10 @@ async function performPublish(scheduledItem) {
     console.log(`--- Starting publish process for: "${scheduledItem.title}" ---`);
     let browser;
     try {
-        browser = await puppeteer.launch({
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
-        const page = await browser.newPage();
+        // Launch a new browser instance using Playwright
+        browser = await chromium.launch();
+        const context = await browser.newContext();
+        const page = await context.newPage();
 
         const ZEDGE_PROFILES = {
             Normal: 'https://upload.zedge.net/business/4e5d55ef-ea99-4913-90cf-09431dc1f28f/profiles/0c02b238-4bd0-479e-91f7-85c6df9c8b0f/content/WALLPAPER',
@@ -146,7 +146,7 @@ async function performPublish(scheduledItem) {
         if (!targetProfileUrl) throw new Error(`Could not determine a valid profile URL for theme: "${theme}"`);
 
         console.log(`Loading profile: ${targetProfileName} at ${targetProfileUrl}`);
-        await page.goto(targetProfileUrl, { waitUntil: 'networkidle2' });
+        await page.goto(targetProfileUrl, { waitUntil: 'networkidle' });
 
         console.log(`Searching for DRAFT: "${scheduledItem.title}"`);
         const foundAndClicked = await page.evaluate((title) => {
@@ -162,7 +162,7 @@ async function performPublish(scheduledItem) {
             }
             return false;
         }, scheduledItem.title);
-        
+
         if (!foundAndClicked) throw new Error(`Could not find a DRAFT with the title "${scheduledItem.title}"`);
 
         console.log("Found DRAFT, clicking it. Waiting for details page.");
