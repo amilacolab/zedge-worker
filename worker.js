@@ -6,6 +6,10 @@ const fs = require('fs');
 const https = require('https');
 const discordBot = require('./bot.js');
 
+console.log('--- Verifying Environment Variable ---');
+console.log('CONNECTION_STRING used:', process.env.CONNECTION_STRING ? 'Exists' : 'MISSING!');
+console.log('--- End Verification ---');
+
 const CONNECTION_STRING = process.env.CONNECTION_STRING;
 
 // CORRECTED: Added the SSL requirement for Neon
@@ -15,6 +19,30 @@ const pool = new Pool({
         require: true,
     },
 });
+
+async function loadData() {
+    console.log('Attempting to load data...'); // New Log
+    let client;
+    try {
+        console.log('Attempting to connect to pool...'); // New Log
+        client = await pool.connect();
+        console.log('Successfully connected to pool.'); // New Log
+        
+        const result = await client.query('SELECT data FROM app_data WHERE id = 1');
+        console.log('Query executed successfully.'); // New Log
+
+        if (result.rows.length > 0) { return result.rows[0].data; }
+        return {};
+    } catch (err) {
+        console.error('CRITICAL ERROR in loadData:', err.message); // More visible error
+        return {};
+    } finally {
+        if (client) { 
+            client.release();
+            console.log('Database client released.'); // New Log
+        }
+    }
+}
 
 async function checkLoginStatus() {
     console.log('Performing Zedge login status check...');
@@ -90,6 +118,11 @@ let isQueueProcessing = false;
 async function checkScheduleForPublishing() {
     console.log('Running background check for scheduled items to publish...');
     const data = await loadData();
+    // If the desktop toggle is ON, the cloud worker should do nothing.
+    if (data.settings && data.settings.isAutoPublishingEnabled) {
+        console.log('Desktop auto-publishing is active. Cloud worker is standing by.');
+        return; 
+    }
     if (!data.schedule) { console.log("No schedule found in database."); return; }
     const now = new Date();
     for (const dateKey in data.schedule) {
