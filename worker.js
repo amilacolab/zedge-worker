@@ -128,7 +128,7 @@ async function checkScheduleForPublishing() {
     for (const dateKey in data.schedule) {
         for (const timeKey in data.schedule[dateKey]) {
             for (const item of data.schedule[dateKey][timeKey]) {
-                const scheduleDateTime = new Date(`${dateKey}T${timeKey}`);
+                const scheduleDateTime = new Date(`${dateKey}T${timeKey}:00.000Z`);
                 const isDue = now >= scheduleDateTime;
                 const isPending = !item.status || item.status === 'Pending';
                 if (isDue && isPending && !publishingInProgress.has(item.id)) {
@@ -186,38 +186,74 @@ async function performPublish(scheduledItem) {
     let browser;
     try {
         const storageState = fs.existsSync('session.json') ? 'session.json' : undefined;
+        if (!storageState) throw new Error('session.json not found.');
+
         browser = await chromium.launch();
         const context = await browser.newContext({ storageState });
         const page = await context.newPage();
+
         const ZEDGE_PROFILES = {
             Normal: 'https://upload.zedge.net/business/4e5d55ef-ea99-4913-90cf-09431dc1f28f/profiles/0c02b238-4bd0-479e-91f7-85c6df9c8b0f/content/WALLPAPER',
             Black: 'https://upload.zedge.net/business/4e5d55ef-ea99-4913-90cf-09431dc1f28f/profiles/a90052da-0ec5-4877-a73f-034c6da5d45a/content/WALLPAPER'
         };
+
         const theme = scheduledItem.theme || '';
         const targetProfileName = theme.toLowerCase().includes('black') ? 'Black' : 'Normal';
         const targetProfileUrl = ZEDGE_PROFILES[targetProfileName];
+
         if (!targetProfileUrl) throw new Error(`Could not determine a valid profile URL for theme: "${theme}"`);
+
+        console.log(`Loading profile to find DRAFT: ${targetProfileName}`);
         await page.goto(targetProfileUrl, { waitUntil: 'networkidle' });
+
+        // Click on the draft item
         const foundAndClicked = await page.evaluate((title) => {
-            const elements = document.querySelectorAll('div[class*="StyledTitle"], div[title], span');
+            const elements = Array.from(document.querySelectorAll('div[title]'));
             for (const el of elements) {
-                if (el.textContent.trim() === title || el.getAttribute('title') === title) {
-                    const clickableParent = el.closest('div[role="button"], a');
-                    if (clickableParent) { clickableParent.click(); return true; }
+                if (el.getAttribute('title').trim() === title) {
+                    const statusEl = el.parentElement?.querySelector('span[type="DEFAULT"]');
+                    if (statusEl && statusEl.textContent.trim().toUpperCase() === 'DRAFT') {
+                        el.closest('div[role="button"]')?.click();
+                        return true;
+                    }
                 }
             }
             return false;
         }, scheduledItem.title);
+
         if (!foundAndClicked) throw new Error(`Could not find a DRAFT with the title "${scheduledItem.title}"`);
+        
+        console.log('Found DRAFT, waiting for details page and clicking publish...');
         await page.waitForTimeout(8000);
-        const clickedPublish = await page.evaluate(() => {
-            const publishButton = Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.trim().toLowerCase() === 'publish');
-            if (publishButton && !publishButton.disabled) { publishButton.click(); return true; }
+
+        // Click the main publish button on the details page
+        const publishButtonSelector = 'button:has-text("Publish")';
+        await page.waitForSelector(publishButtonSelector, { timeout: 15000 });
+        await page.click(publishButtonSelector);
+        
+        console.log('Clicked "Publish", waiting for verification...');
+        await page.waitForTimeout(8000);
+
+        // Navigate back and verify the status is "Published"
+        console.log(`Verifying PUBLISHED status for: "${scheduledItem.title}"`);
+        await page.goto(targetProfileUrl, { waitUntil: 'networkidle' });
+
+        const isPublished = await page.evaluate((title) => {
+             const elements = Array.from(document.querySelectorAll('div[title]'));
+             for (const el of elements) {
+                if (el.getAttribute('title').trim() === title) {
+                    const statusEl = el.parentElement?.querySelector('span[type="SUCCESS"]');
+                    return statusEl && statusEl.textContent.trim().toUpperCase() === 'PUBLISHED';
+                }
+            }
             return false;
-        });
-        if (!clickedPublish) throw new Error('The "Publish" button was not found or was disabled.');
-        return { status: 'success', message: 'Published successfully.' };
+        }, scheduledItem.title);
+
+        if (!isPublished) throw new Error('Verification failed. Item status was not "Published" after upload.');
+
+        return { status: 'success', message: 'Published and verified successfully.' };
     } catch (error) {
+        console.error(`Failed to publish "${scheduledItem.title}":`, error);
         return { status: 'failed', message: error.message };
     } finally {
         if (browser) { await browser.close(); }
