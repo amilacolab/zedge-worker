@@ -295,7 +295,7 @@ async function performPublish(scheduledItem) {
         
         console.log(`Navigating back to ${targetProfileName} profile for verification.`);
         await page.goto(targetProfileUrl);
-        await page.reload({ waitUntil: 'networkidle' });
+        await page.reload({ waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000);
 
         console.log(`Verifying PUBLISHED status for: "${scheduledItem.title}"`);

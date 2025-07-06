@@ -46,27 +46,24 @@ function startBot(token, dependencies) {
     });
 }
 
+// In zedge-worker/bot.js
+
 async function handleScheduleCommand(message) {
     if (typeof workerFunctions.loadDataFunc !== 'function') return message.reply('Error: data functions not available.');
     const currentData = await workerFunctions.loadDataFunc();
     const today = new Date();
-    today.setHours(0, 0, 0, 0);
     const upcomingItems = [];
-    if (currentData.schedule) {
-        Object.keys(currentData.schedule).sort().forEach(dateKey => {
-            const date = new Date(dateKey + 'T00:00:00');
-            if (date >= today) {
-                Object.keys(currentData.schedule[dateKey]).sort().forEach(timeKey => {
-                    currentData.schedule[dateKey][timeKey].forEach(item => {
-                        if (item.status !== 'Published') {
-                            const scheduledDate = new Date(`${dateKey}T${timeKey}`);
-                            upcomingItems.push(`- \`${item.title}\` on ${scheduledDate.toLocaleDateString()} at ${scheduledDate.toLocaleTimeString()}`);
-                        }
-                    });
-                });
+
+    if (currentData.schedule && Array.isArray(currentData.schedule)) {
+        currentData.schedule.forEach(item => {
+            const scheduledDate = new Date(item.scheduledAtUTC);
+            if (scheduledDate >= today && item.status !== 'Published') {
+                upcomingItems.push(`- \`${item.title}\` on ${scheduledDate.toLocaleString()}`);
             }
         });
     }
+
+    upcomingItems.sort(); // Sort by date implicitly
     if (upcomingItems.length > 0) {
         message.channel.send(`**Upcoming Scheduled Items:**\n${upcomingItems.slice(0, 15).join('\n')}`);
     } else {
@@ -77,23 +74,19 @@ async function handleScheduleCommand(message) {
 async function handleStatusCommand(message, args) {
     if (typeof workerFunctions.loadDataFunc !== 'function') return message.reply('Error: data functions not available.');
     const query = args.join(' ').toLowerCase();
-    if (!query) {
-        message.channel.send('Please provide a title to search for. Usage: `!status <title query>`');
-        return;
-    }
+    if (!query) return message.channel.send('Please provide a title to search for.');
+
     const currentData = await workerFunctions.loadDataFunc();
     const matches = [];
-    if (currentData.schedule) {
-        Object.keys(currentData.schedule).forEach(dateKey => {
-            Object.keys(currentData.schedule[dateKey]).forEach(timeKey => {
-                currentData.schedule[dateKey][timeKey].forEach(item => {
-                    if (item.title.toLowerCase().includes(query)) {
-                        matches.push(`- \`${item.title}\` -> **${item.status || 'Pending'}**`);
-                    }
-                });
-            });
+
+    if (currentData.schedule && Array.isArray(currentData.schedule)) {
+        currentData.schedule.forEach(item => {
+            if (item.title.toLowerCase().includes(query)) {
+                matches.push(`- \`${item.title}\` -> **${item.status || 'Pending'}**`);
+            }
         });
     }
+    
     if (matches.length > 0) {
         message.channel.send(`**Found ${matches.length} match(es) for "${query}":**\n${matches.slice(0, 15).join('\n')}`);
     } else {
