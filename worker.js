@@ -321,25 +321,24 @@ app.get('/', (req, res) => {
 });
 
 app.post('/api/v1/submit-new-session', async (req, res) => {
-    console.log('Received a request to update the session.');
+    console.log('Received a request to update the session from Cloud Helper.');
     const providedKey = req.headers['x-auth-key'];
-    const { cookies } = req.body;
+    // The Replit script sends the whole storageState object, which includes cookies.
+    const newStorageState = req.body; 
 
     if (providedKey !== SECRET_KEY) {
         return res.status(401).json({ error: 'Unauthorized: Invalid authentication key.' });
     }
-    if (!cookies) {
-        return res.status(400).json({ error: 'Bad Request: No cookies provided.' });
+    // Check if the body contains a 'cookies' array, which is the main part of storageState.
+    if (!newStorageState || !Array.isArray(newStorageState.cookies)) {
+        return res.status(400).json({ error: 'Bad Request: Invalid or missing session data.' });
     }
 
     try {
-        const parsedCookies = cookies.split(';').map(c => {
-            const [name, ...valueParts] = c.trim().split('=');
-            return { name, value: valueParts.join('='), domain: '.zedge.net', path: '/', httpOnly: true, secure: true, sameSite: 'None' };
-        });
-        const newStorageState = { cookies: parsedCookies, origins: [] };
+        // We received the correctly formatted object directly, so we just save it.
         await fs.writeFile(SESSION_FILE_PATH, JSON.stringify(newStorageState, null, 2));
-        console.log('✅ Successfully saved new session.json file.');
+        
+        console.log('✅ Successfully saved new session.json file from Cloud Helper.');
         sendDiscordNotification('✅ **Session Refreshed!** The Zedge worker is back online and ready to publish.');
         res.status(200).json({ message: 'Session updated successfully.' });
     } catch (error) {
@@ -347,7 +346,6 @@ app.post('/api/v1/submit-new-session', async (req, res) => {
         res.status(500).json({ error: 'Internal Server Error: Could not save the session.' });
     }
 });
-
 // =================================================================
 // SECTION 3: WORKER INITIALIZATION
 // =================================================================
