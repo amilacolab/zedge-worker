@@ -1,4 +1,4 @@
-// worker.js - UPDATED for automated email/password login.
+// worker.js - UPDATED for automated email/password login (2-step flow).
 
 // --- Core Node.js Modules ---
 const fs = require('fs').promises;
@@ -56,21 +56,36 @@ async function saveData(appData) {
     }
 }
 
-// NEW: Automated login function
+// NEW (Corrected): Automated login function for the 2-step process
 async function loginAndSaveSession() {
-    console.log('Attempting to log in to Zedge and save session...');
+    console.log('Attempting to log in to Zedge (2-step process)...');
     const browser = await chromium.launch();
     try {
         const context = await browser.newContext();
         const page = await context.newPage();
         
-        await page.goto('https://www.zedge.net/login');
-        await page.waitForSelector('input[name="username"]');
+        // Step 1: Go to the initial email login page
+        await page.goto('https://account.zedge.net/v2/login-with-email');
         
-        await page.fill('input[name="username"]', process.env.ZEDGE_EMAIL);
-        await page.fill('input[name="password"]', process.env.ZEDGE_PASSWORD);
+        // Fill in the email address
+        console.log('Filling email address...');
+        await page.waitForSelector('input[type="email"]');
+        await page.fill('input[type="email"]', process.env.ZEDGE_EMAIL);
         
-        await page.click('button[type="submit"]');
+        // Click the "Continue with password" button
+        console.log('Clicking "Continue with password"...');
+        await page.click('button:has-text("Continue with password")');
+        
+        // Step 2: Wait for the password page and fill the password
+        console.log('Waiting for password page...');
+        await page.waitForSelector('input[type="password"]');
+        await page.fill('input[type="password"]', process.env.ZEDGE_PASSWORD);
+        
+        // Click the final "Continue" button
+        console.log('Clicking final "Continue" button...');
+        await page.click('button:has-text("Continue")');
+
+        // Wait for successful login navigation to the upload page
         await page.waitForURL('**/upload.zedge.net/**', { timeout: 30000 });
         
         console.log('Login successful. Saving session state...');
@@ -89,6 +104,7 @@ async function loginAndSaveSession() {
         if (browser) await browser.close();
     }
 }
+
 
 // UPDATED: Self-healing login check
 async function checkLoginStatus() {
