@@ -1,5 +1,4 @@
-// worker.js - FINAL COMPLETE AND VERIFIED VERSION
-// Contains all original functions, optimizations, and the new Express server.
+// worker.js - UPDATED for automated email/password login.
 
 // --- Core Node.js Modules ---
 const fs = require('fs').promises;
@@ -15,7 +14,6 @@ const bodyParser = require('body-parser');
 const discordBot = require('./bot.js');
 
 // --- CONFIGURATION & SECURITY ---
-const SECRET_KEY = 'Vaz20#31204'; // Your secret key
 const SESSION_FILE_PATH = 'session.json';
 
 // --- Database Connection ---
@@ -58,28 +56,72 @@ async function saveData(appData) {
     }
 }
 
+// NEW: Automated login function
+async function loginAndSaveSession() {
+    console.log('Attempting to log in to Zedge and save session...');
+    const browser = await chromium.launch();
+    try {
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        
+        await page.goto('https://www.zedge.net/login');
+        await page.waitForSelector('input[name="username"]');
+        
+        await page.fill('input[name="username"]', process.env.ZEDGE_EMAIL);
+        await page.fill('input[name="password"]', process.env.ZEDGE_PASSWORD);
+        
+        await page.click('button[type="submit"]');
+        await page.waitForURL('**/upload.zedge.net/**', { timeout: 30000 });
+        
+        console.log('Login successful. Saving session state...');
+        const storageState = await context.storageState();
+        await fs.writeFile(SESSION_FILE_PATH, JSON.stringify(storageState));
+        
+        console.log('Session file has been created/updated.');
+        return { loggedIn: true };
+    } catch (error) {
+        console.error('Failed to log in to Zedge:', error.message);
+        try {
+            await fs.unlink(SESSION_FILE_PATH);
+        } catch (e) { /* ignore if file doesn't exist */ }
+        return { loggedIn: false, error: `Login attempt failed.` };
+    } finally {
+        if (browser) await browser.close();
+    }
+}
+
+// UPDATED: Self-healing login check
 async function checkLoginStatus() {
     console.log('Performing Zedge login status check...');
     let browser;
     try {
+        // First, try to use the existing session file
         await fs.access(SESSION_FILE_PATH);
         const storageState = await fs.readFile(SESSION_FILE_PATH, 'utf-8');
         browser = await chromium.launch();
         const context = await browser.newContext({ storageState: JSON.parse(storageState) });
         const page = await context.newPage();
         await page.goto('https://upload.zedge.net/', { waitUntil: 'domcontentloaded' });
+        
         const finalUrl = page.url();
-        return finalUrl.includes('account.zedge.net')
-            ? { loggedIn: false, error: 'Session is invalid or expired.' }
-            : { loggedIn: true };
+        if (finalUrl.includes('account.zedge.net')) {
+             console.log('Session is invalid or expired. Attempting to re-login.');
+             return await loginAndSaveSession(); // Attempt to log in again
+        }
+        return { loggedIn: true };
+
     } catch (error) {
-        return error.code === 'ENOENT'
-            ? { loggedIn: false, error: 'session.json file not found on server.' }
-            : { loggedIn: false, error: error.message };
+        if (error.code === 'ENOENT') {
+            console.log('session.json not found on server. Attempting initial login.');
+            return await loginAndSaveSession(); // No session file, so log in
+        }
+        console.error('An unknown error occurred during status check. Attempting re-login.', error.message);
+        return await loginAndSaveSession();
     } finally {
         if (browser) await browser.close();
     }
 }
+
 
 function sendDiscordNotification(message) {
     const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
@@ -109,14 +151,11 @@ async function checkScheduleForPublishing() {
     }
 
     const now = new Date();
-    console.log(`Server time (UTC): ${now.toISOString()}`);
-
     for (const item of data.schedule) {
         if (!item.scheduledAtUTC) continue;
         const scheduleDateTime = new Date(item.scheduledAtUTC);
         const isDue = now >= scheduleDateTime;
         const isPending = !item.status || item.status === 'Pending';
-        console.log(`Checking: "${item.title}" | Scheduled (UTC): ${scheduleDateTime.toISOString()} | Is Due: ${isDue}`);
 
         if (isDue && isPending && !publishingInProgress.has(item.id)) {
             console.log(`✅ FOUND DUE ITEM: "${item.title}". Adding to queue.`);
@@ -127,7 +166,6 @@ async function checkScheduleForPublishing() {
             }
         }
     }
-    console.log('Finished check.');
 }
 
 async function processPublishingQueue() {
@@ -172,12 +210,17 @@ async function performPublish(scheduledItem) {
     console.log(`--- Starting publish process for: "${scheduledItem.title}" ---`);
     let browser;
     try {
+        // Pre-flight check to ensure we are logged in.
+        const loginStatus = await checkLoginStatus();
+        if (!loginStatus.loggedIn) {
+            throw new Error(`Publishing failed because login is not active. Reason: ${loginStatus.error}`);
+        }
+
         const storageState = await fs.readFile(SESSION_FILE_PATH, 'utf-8');
         browser = await chromium.launch();
         const context = await browser.newContext({ storageState: JSON.parse(storageState) });
         const page = await context.newPage();
 
-        // --- Restored the missing optimization from your original file ---
         await page.route('**/*', (route) => {
             const resourceType = route.request().resourceType();
             if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
@@ -310,7 +353,7 @@ async function performPublish(scheduledItem) {
 }
 
 // =================================================================
-// SECTION 2: EXPRESS WEB SERVER
+// SECTION 2: EXPRESS WEB SERVER (Now simplified)
 // =================================================================
 
 const app = express();
@@ -320,32 +363,6 @@ app.get('/', (req, res) => {
     res.status(200).send('Zedge Publisher worker is alive and running.');
 });
 
-app.post('/api/v1/submit-new-session', async (req, res) => {
-    console.log('Received a request to update the session from Cloud Helper.');
-    const providedKey = req.headers['x-auth-key'];
-    // The Replit script sends the whole storageState object, which includes cookies.
-    const newStorageState = req.body; 
-
-    if (providedKey !== SECRET_KEY) {
-        return res.status(401).json({ error: 'Unauthorized: Invalid authentication key.' });
-    }
-    // Check if the body contains a 'cookies' array, which is the main part of storageState.
-    if (!newStorageState || !Array.isArray(newStorageState.cookies)) {
-        return res.status(400).json({ error: 'Bad Request: Invalid or missing session data.' });
-    }
-
-    try {
-        // We received the correctly formatted object directly, so we just save it.
-        await fs.writeFile(SESSION_FILE_PATH, JSON.stringify(newStorageState, null, 2));
-        
-        console.log('✅ Successfully saved new session.json file from Cloud Helper.');
-        sendDiscordNotification('✅ **Session Refreshed!** The Zedge worker is back online and ready to publish.');
-        res.status(200).json({ message: 'Session updated successfully.' });
-    } catch (error) {
-        console.error('CRITICAL ERROR: Failed to save the new session file.', error);
-        res.status(500).json({ error: 'Internal Server Error: Could not save the session.' });
-    }
-});
 // =================================================================
 // SECTION 3: WORKER INITIALIZATION
 // =================================================================
@@ -362,11 +379,14 @@ app.listen(PORT, () => {
 
 function startWorker() {
     console.log('Zedge Worker started. Initializing background tasks...');
+    // Initial check on startup after a small delay
+    setTimeout(checkLoginStatus, 15 * 1000); 
+
     setInterval(checkScheduleForPublishing, 60 * 1000);
     setInterval(async () => {
         const status = await checkLoginStatus();
         if (!status.loggedIn) {
-            sendDiscordNotification(`🔴 **Action Required:** The Zedge worker has been logged out. Please use the mobile app to refresh the session. \n**Reason:** ${status.error}`);
+            sendDiscordNotification(`🔴 **Action Required:** The Zedge worker has been logged out and could not log back in. Manual intervention may be needed. \n**Reason:** ${status.error}`);
         }
     }, 6 * 60 * 60 * 1000);
 }
