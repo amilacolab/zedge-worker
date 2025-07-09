@@ -162,13 +162,6 @@ async function checkScheduleForPublishing() {
 
     if (data.settings?.isAutoPublishingEnabled) { /* ... logic remains the same ... */ }
     if (!data.schedule || !Array.isArray(data.schedule) || data.schedule.length === 0) { /* ... logic remains the same ... */ }
-    if (data.schedule && data.schedule.length > 0) {
-        const itemCount = data.schedule.length;
-        const pendingItems = data.schedule.filter(item => !item.status || item.status === 'Pending').length;
-        console.log(`[DIAGNOSTIC] Worker loaded ${itemCount} total schedule items. ${pendingItems} are pending.`);
-    } else {
-        console.log('[DIAGNOSTIC] Worker loaded no schedule data or an empty schedule.');
-    }    
 
     const now = new Date();
     const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
