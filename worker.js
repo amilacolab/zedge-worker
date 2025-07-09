@@ -161,17 +161,14 @@ async function checkScheduleForPublishing() {
     
     const schedule = data.schedule || [];
     if (schedule.length > 0) {
+        // This log now correctly reflects that it WILL check the items.
         console.log(`[${schedule.length} items in schedule] Checking for due/missed items...`);
     } else {
         console.log("[Schedule is empty] No items to check.");
     }
     
-    // **FIXED**: Only run publishing logic if the setting is enabled
-    if (!data.settings?.isAutoPublishingEnabled) {
-        console.log("Auto-publishing is disabled in settings. Skipping check.");
-        console.log('--- Finished check. ---');
-        return;
-    }
+    // **FIXED**: The entire block checking for isAutoPublishingEnabled has been REMOVED.
+    // The worker will now always process the schedule.
 
     const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
     const newlyMissedItems = [];
@@ -191,6 +188,7 @@ async function checkScheduleForPublishing() {
             }
         } else {
             if (!publishingInProgress.has(item.id)) {
+                // This log will now appear correctly when an item is due.
                 console.log(`✅ FOUND DUE ITEM: "${item.title}". Adding to queue.`);
                 publishingInProgress.add(item.id);
                 publishingQueue.push(item);
