@@ -1,4 +1,4 @@
-// worker.js - FINALIZED with login and restored logging.
+// worker.js - FINAL, CORRECTED VERSION
 
 // --- Core Node.js Modules ---
 const fs = require('fs').promises;
@@ -19,8 +19,8 @@ const SESSION_FILE_PATH = 'session.json';
 let publishingInProgress = new Set();
 let publishingQueue = [];
 let isQueueProcessing = false;
-let missedItemsCache = []; // NEW: Cache for missed items
-let missedItemsNotificationSent = false; // NEW: Flag to prevent spam
+let missedItemsCache = []; 
+let missedItemsNotificationSent = false; 
 
 
 // --- Database Connection ---
@@ -33,17 +33,16 @@ const pool = new Pool({
 // SECTION 1: CORE APPLICATION LOGIC
 // =================================================================
 
-
-
 async function loadData() {
     let client;
     try {
         client = await pool.connect();
         const result = await client.query('SELECT data FROM app_data WHERE id = 1');
-        return result.rows.length > 0 ? result.rows[0].data : {};
+        // Return default data structure if no data is found
+        return result.rows.length > 0 && result.rows[0].data ? result.rows[0].data : { settings: {}, activeResults: {}, recycleBin: [], schedule: [] };
     } catch (err) {
         console.error('Error loading data from database', err);
-        return {};
+        return { settings: {}, activeResults: {}, recycleBin: [], schedule: [] }; // Return default structure on error
     } finally {
         if (client) client.release();
     }
@@ -53,7 +52,7 @@ async function saveData(appData) {
     let client;
     try {
         client = await pool.connect();
-        await client.query('UPDATE app_data SET data = $1 WHERE id = 1', [appData]);
+        await client.query('INSERT INTO app_data (id, data) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET data = $1', [appData]);
     } catch (err) {
         console.error('Error saving data to database', err);
     } finally {
@@ -155,35 +154,42 @@ function sendDiscordNotification(message) {
     }
 }
 
-// RESTORED detailed logging
 async function checkScheduleForPublishing() {
-    console.log('--- Running background check ---');
-    const data = await loadData();
-
-    if (data.settings?.isAutoPublishingEnabled) { /* ... logic remains the same ... */ }
-    if (!data.schedule || !Array.isArray(data.schedule) || data.schedule.length === 0) { /* ... logic remains the same ... */ }
-
     const now = new Date();
+    console.log(`--- Running background check [UTC: ${now.toUTCString()}] ---`);
+    const data = await loadData();
+    
+    const schedule = data.schedule || [];
+    if (schedule.length > 0) {
+        console.log(`[${schedule.length} items in schedule] Checking for due/missed items...`);
+    } else {
+        console.log("[Schedule is empty] No items to check.");
+    }
+    
+    // **FIXED**: Only run publishing logic if the setting is enabled
+    if (!data.settings?.isAutoPublishingEnabled) {
+        console.log("Auto-publishing is disabled in settings. Skipping check.");
+        console.log('--- Finished check. ---');
+        return;
+    }
+
     const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
     const newlyMissedItems = [];
 
-    for (const item of data.schedule) {
+    for (const item of schedule) {
         if (!item.scheduledAtUTC) continue;
 
         const isPending = !item.status || item.status === 'Pending';
-        if (!isPending) continue; // Skip already published or failed items
+        if (!isPending) continue; 
 
         const scheduleDateTime = new Date(item.scheduledAtUTC);
-        if (scheduleDateTime > now) continue; // Skip items scheduled for the future
+        if (scheduleDateTime > now) continue; 
 
-        // Item is due or missed
         if (scheduleDateTime < fiveMinutesAgo) {
-            // This item was missed
             if (!missedItemsCache.find(cached => cached.id === item.id) && !publishingInProgress.has(item.id)) {
                 newlyMissedItems.push(item);
             }
         } else {
-            // This item is due now
             if (!publishingInProgress.has(item.id)) {
                 console.log(`✅ FOUND DUE ITEM: "${item.title}". Adding to queue.`);
                 publishingInProgress.add(item.id);
@@ -196,12 +202,10 @@ async function checkScheduleForPublishing() {
         missedItemsCache.push(...newlyMissedItems);
     }
     
-    // Process the normal queue
     if (!isQueueProcessing && publishingQueue.length > 0) {
         processPublishingQueue();
     }
     
-    // Send one-time notification for missed items
     if (missedItemsCache.length > 0 && !missedItemsNotificationSent) {
         const itemTitles = missedItemsCache.map(item => `- \`${item.title}\``).join('\n');
         const notificationMessage = `🔴 **Missed Publications Detected!**\n\nThe following items were not published at their scheduled time:\n${itemTitles}\n\n**Use a command to proceed:**\n\`!publish all-missed\` - Publishes all items now.\n\`!publish <title>\` - Publishes a specific item.\n\n*To reschedule, please use the desktop app. You can then use \`!clear-missed\` to remove this message.*`;
@@ -209,7 +213,7 @@ async function checkScheduleForPublishing() {
         missedItemsNotificationSent = true;
     }
     
-    console.log('Finished check.');
+    console.log('--- Finished check. ---');
 }
 
 async function processPublishingQueue() {
@@ -228,54 +232,36 @@ async function processPublishingQueue() {
     isQueueProcessing = false;
 }
 
-async function executePublishWorkflow(scheduledItem) {async function executePublishWorkflow(scheduledItem) {
-    // This function runs after a successful or failed publish attempt
+// **FIXED**: Corrected duplicated function and added logic to remove published items.
+async function executePublishWorkflow(scheduledItem) {
     const result = await performPublish(scheduledItem);
-    const appData = await loadData(); // Load the most current data from the database
+    const appData = await loadData(); 
 
-    try {
-        if (appData.schedule && Array.isArray(appData.schedule)) {
-            const itemIndex = appData.schedule.findIndex(i => i.id === scheduledItem.id);
-
-            if (itemIndex > -1) {
-                // Update the status based on the result of the publish attempt
-                appData.schedule[itemIndex].status = result.status === 'success' ? 'Published' : 'Failed';
-                appData.schedule[itemIndex].failMessage = result.message;
-
-                // Save the updated data back to the database
-                await saveData(appData);
-
-                // Send a Discord notification about the outcome
-                const notificationMessage = result.status === 'success'
-                    ? `✅ Successfully published: "${scheduledItem.title}"`
-                    : `❌ Failed to publish: "${scheduledItem.title}".\nReason: ${result.message}`;
-                sendDiscordNotification(notificationMessage);
-            }
-        }
-    } catch (e) {
-        console.error('Failed to update database after publishing:', e);
+    if (!appData.schedule || !Array.isArray(appData.schedule)) {
+        console.error('Could not find schedule array in data to update status.');
+        return;
     }
-    return result;
-}
-    const result = await performPublish(scheduledItem);
-    const appData = await loadData();
-    try {
-        if (appData.schedule && Array.isArray(appData.schedule)) {
-            const itemIndex = appData.schedule.findIndex(i => i.id === scheduledItem.id);
-            if (itemIndex > -1) {
-                appData.schedule[itemIndex].status = result.status === 'success' ? 'Published' : 'Failed';
-                appData.schedule[itemIndex].failMessage = result.message;
-                await saveData(appData);
-                const notificationMessage = result.status === 'success'
-                    ? `✅ Successfully published: "${scheduledItem.title}"`
-                    : `❌ Failed to publish: "${scheduledItem.title}".\nReason: ${result.message}`;
-                sendDiscordNotification(notificationMessage);
-            }
+
+    const itemIndex = appData.schedule.findIndex(i => i.id === scheduledItem.id);
+
+    if (itemIndex > -1) {
+        const itemTitle = appData.schedule[itemIndex].title;
+        if (result.status === 'success') {
+            // **FIXED**: Remove the item from the schedule array on success
+            appData.schedule.splice(itemIndex, 1);
+            const notificationMessage = `✅ **Published:** "${itemTitle}" has been successfully published and removed from the schedule.`;
+            sendDiscordNotification(notificationMessage);
+        } else {
+            // **FIXED**: For failed items, update status and keep in schedule for review
+            appData.schedule[itemIndex].status = 'Failed';
+            appData.schedule[itemIndex].failMessage = result.message || 'An unknown error occurred during publishing.';
+            const notificationMessage = `❌ **Failed to publish:** "${itemTitle}".\nReason: ${result.message}`;
+            sendDiscordNotification(notificationMessage);
         }
-    } catch (e) {
-        console.error('Failed to update database after publishing:', e);
+        await saveData(appData);
+    } else {
+         console.log(`Item "${scheduledItem.title}" was already processed or removed from the schedule.`);
     }
-    return result;
 }
 
 async function performPublish(scheduledItem) {
@@ -451,7 +437,6 @@ function publishMissedItems(identifier) {
 }
 
 function clearMissedItemsCache() {
-    // This can be used if you manually reschedule and want to clear the alert
     missedItemsCache = [];
     missedItemsNotificationSent = false;
     return 'Missed items cache has been cleared.';
@@ -459,7 +444,7 @@ function clearMissedItemsCache() {
 
 
 // =================================================================
-// SECTION 2: EXPRESS WEB SERVER (Now simplified)
+// SECTION 2: EXPRESS WEB SERVER
 // =================================================================
 
 const app = express();
@@ -489,9 +474,12 @@ app.listen(PORT, () => {
 
 function startWorker() {
     console.log('Zedge Worker started. Initializing background tasks...');
-    setTimeout(checkLoginStatus, 15 * 1000); 
+    setTimeout(checkScheduleForPublishing, 15 * 1000); 
 
+    // Main scheduling check
     setInterval(checkScheduleForPublishing, 60 * 1000);
+
+    // Periodic re-login check
     setInterval(async () => {
         const status = await checkLoginStatus();
         if (!status.loggedIn) {
@@ -499,7 +487,7 @@ function startWorker() {
         }
     }, 6 * 60 * 60 * 1000);
 }
-// Add this new function to worker.js
+
 async function rescheduleMissedItem(identifier, timeString) {
     const appData = await loadData();
     if (!appData.schedule || !Array.isArray(appData.schedule)) {
@@ -551,7 +539,6 @@ async function rescheduleMissedItem(identifier, timeString) {
 
     await saveData(appData);
 
-    // Correctly filter the cache
     if (identifier.toLowerCase() === 'all') {
         missedItemsCache = [];
     } else {
