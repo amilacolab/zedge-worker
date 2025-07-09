@@ -1,4 +1,4 @@
-// worker.js - UPDATED for automated email/password login (2-step flow).
+// worker.js - UPDATED with credential check.
 
 // --- Core Node.js Modules ---
 const fs = require('fs').promises;
@@ -56,36 +56,36 @@ async function saveData(appData) {
     }
 }
 
-// NEW (Corrected): Automated login function for the 2-step process
+// UPDATED: Added a pre-flight check for credentials.
 async function loginAndSaveSession() {
+    // PRE-FLIGHT CHECK: Ensure credentials are set in the environment.
+    if (!process.env.ZEDGE_EMAIL || !process.env.ZEDGE_PASSWORD) {
+        console.error('CRITICAL: ZEDGE_EMAIL or ZEDGE_PASSWORD environment variables are not set on the server.');
+        return { loggedIn: false, error: 'Server is missing credentials. Please set them in the Render dashboard.' };
+    }
+
     console.log('Attempting to log in to Zedge (2-step process)...');
     const browser = await chromium.launch();
     try {
         const context = await browser.newContext();
         const page = await context.newPage();
         
-        // Step 1: Go to the initial email login page
         await page.goto('https://account.zedge.net/v2/login-with-email');
         
-        // Fill in the email address
         console.log('Filling email address...');
         await page.waitForSelector('input[type="email"]');
         await page.fill('input[type="email"]', process.env.ZEDGE_EMAIL);
         
-        // Click the "Continue with password" button
         console.log('Clicking "Continue with password"...');
         await page.click('button:has-text("Continue with password")');
         
-        // Step 2: Wait for the password page and fill the password
         console.log('Waiting for password page...');
         await page.waitForSelector('input[type="password"]');
         await page.fill('input[type="password"]', process.env.ZEDGE_PASSWORD);
         
-        // Click the final "Continue" button
         console.log('Clicking final "Continue" button...');
         await page.click('button:has-text("Continue")');
 
-        // Wait for successful login navigation to the upload page
         await page.waitForURL('**/upload.zedge.net/**', { timeout: 30000 });
         
         console.log('Login successful. Saving session state...');
@@ -106,12 +106,10 @@ async function loginAndSaveSession() {
 }
 
 
-// UPDATED: Self-healing login check
 async function checkLoginStatus() {
     console.log('Performing Zedge login status check...');
     let browser;
     try {
-        // First, try to use the existing session file
         await fs.access(SESSION_FILE_PATH);
         const storageState = await fs.readFile(SESSION_FILE_PATH, 'utf-8');
         browser = await chromium.launch();
@@ -122,14 +120,14 @@ async function checkLoginStatus() {
         const finalUrl = page.url();
         if (finalUrl.includes('account.zedge.net')) {
              console.log('Session is invalid or expired. Attempting to re-login.');
-             return await loginAndSaveSession(); // Attempt to log in again
+             return await loginAndSaveSession();
         }
         return { loggedIn: true };
 
     } catch (error) {
         if (error.code === 'ENOENT') {
             console.log('session.json not found on server. Attempting initial login.');
-            return await loginAndSaveSession(); // No session file, so log in
+            return await loginAndSaveSession();
         }
         console.error('An unknown error occurred during status check. Attempting re-login.', error.message);
         return await loginAndSaveSession();
@@ -226,7 +224,6 @@ async function performPublish(scheduledItem) {
     console.log(`--- Starting publish process for: "${scheduledItem.title}" ---`);
     let browser;
     try {
-        // Pre-flight check to ensure we are logged in.
         const loginStatus = await checkLoginStatus();
         if (!loginStatus.loggedIn) {
             throw new Error(`Publishing failed because login is not active. Reason: ${loginStatus.error}`);
@@ -395,7 +392,6 @@ app.listen(PORT, () => {
 
 function startWorker() {
     console.log('Zedge Worker started. Initializing background tasks...');
-    // Initial check on startup after a small delay
     setTimeout(checkLoginStatus, 15 * 1000); 
 
     setInterval(checkScheduleForPublishing, 60 * 1000);
