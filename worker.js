@@ -1,4 +1,4 @@
-// worker.js - FINAL with corrected post-login URL.
+// worker.js - FINALIZED with login and restored logging.
 
 // --- Core Node.js Modules ---
 const fs = require('fs').promises;
@@ -56,7 +56,6 @@ async function saveData(appData) {
     }
 }
 
-// FINALIZED: Waits for the correct post-login URL.
 async function loginAndSaveSession() {
     if (!process.env.ZEDGE_EMAIL || !process.env.ZEDGE_PASSWORD) {
         console.error('CRITICAL: ZEDGE_EMAIL or ZEDGE_PASSWORD environment variables are not set on the server.');
@@ -85,7 +84,6 @@ async function loginAndSaveSession() {
         console.log('Clicking final "Continue" button...');
         await page.click('button:has-text("Continue")');
 
-        // CORRECTED: Wait for the actual destination URL after login.
         await page.waitForURL('**/account.zedge.net/v2/user**', { timeout: 60000 });
         
         console.log('Login successful. Saving session state...');
@@ -152,6 +150,7 @@ function sendDiscordNotification(message) {
     }
 }
 
+// RESTORED detailed logging
 async function checkScheduleForPublishing() {
     console.log('--- Running background check ---');
     const data = await loadData();
@@ -161,15 +160,20 @@ async function checkScheduleForPublishing() {
         return;
     }
     if (!data.schedule || !Array.isArray(data.schedule) || data.schedule.length === 0) {
+        console.log('No scheduled items found to process.');
         return;
     }
 
     const now = new Date();
+    console.log(`Server time (UTC): ${now.toISOString()}`);
+
     for (const item of data.schedule) {
         if (!item.scheduledAtUTC) continue;
         const scheduleDateTime = new Date(item.scheduledAtUTC);
         const isDue = now >= scheduleDateTime;
         const isPending = !item.status || item.status === 'Pending';
+        // This detailed log is now restored
+        console.log(`Checking: "${item.title}" | Scheduled (UTC): ${scheduleDateTime.toISOString()} | Is Due: ${isDue}`);
 
         if (isDue && isPending && !publishingInProgress.has(item.id)) {
             console.log(`✅ FOUND DUE ITEM: "${item.title}". Adding to queue.`);
@@ -180,6 +184,7 @@ async function checkScheduleForPublishing() {
             }
         }
     }
+    console.log('Finished check.');
 }
 
 async function processPublishingQueue() {
