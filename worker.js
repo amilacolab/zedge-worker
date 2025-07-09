@@ -481,7 +481,8 @@ app.listen(PORT, () => {
         loginCheckFunc: checkLoginStatus,
         getMissedItemsFunc: getMissedItems,
         publishMissedItemsFunc: publishMissedItems,
-        clearMissedCacheFunc: clearMissedItemsCache
+        clearMissedCacheFunc: clearMissedItemsCache,
+        rescheduleMissedItemFunc: rescheduleMissedItem
     });
     startWorker();
 });
@@ -497,4 +498,64 @@ function startWorker() {
             sendDiscordNotification(`🔴 **Action Required:** The Zedge worker has been logged out and could not log back in. Manual intervention may be needed. \n**Reason:** ${status.error}`);
         }
     }, 6 * 60 * 60 * 1000);
+}
+// Add this new function to worker.js
+async function rescheduleMissedItem(identifier, timeString) {
+    const appData = await loadData();
+    if (!appData.schedule || !Array.isArray(appData.schedule)) {
+        return { success: false, message: "Schedule data is not available." };
+    }
+
+    const now = new Date();
+    const value = parseInt(timeString.slice(0, -1), 10);
+    const unit = timeString.slice(-1).toLowerCase();
+
+    if (isNaN(value)) {
+        return { success: false, message: "Invalid time value. Please use a format like `10m`, `1h`, or `30s`." };
+    }
+
+    let newScheduledDate = new Date(now);
+    if (unit === 's') {
+        newScheduledDate.setSeconds(now.getSeconds() + value);
+    } else if (unit === 'm') {
+        newScheduledDate.setMinutes(now.getMinutes() + value);
+    } else if (unit === 'h') {
+        newScheduledDate.setHours(now.getHours() + value);
+    } else {
+        return { success: false, message: "Invalid time unit. Please use `s` (seconds), `m` (minutes), or `h` (hours)." };
+    }
+
+    const itemsToReschedule = [];
+    if (identifier.toLowerCase() === 'all') {
+        itemsToReschedule.push(...missedItemsCache);
+    } else {
+        const item = missedItemsCache.find(i => i.title.toLowerCase() === identifier.toLowerCase());
+        if (item) {
+            itemsToReschedule.push(item);
+        } else {
+            return { success: false, message: `Could not find "${identifier}" in the missed items list.` };
+        }
+    }
+
+    if (itemsToReschedule.length === 0) {
+        return { success: false, message: "No items to reschedule." };
+    }
+
+    itemsToReschedule.forEach(itemToUpdate => {
+        const scheduleIndex = appData.schedule.findIndex(i => i.id === itemToUpdate.id);
+        if (scheduleIndex > -1) {
+            appData.schedule[scheduleIndex].scheduledAtUTC = newScheduledDate.toISOString();
+            appData.schedule[scheduleIndex].status = 'Pending'; // Reset status
+        }
+    });
+
+    await saveData(appData);
+
+    // Clear the rescheduled items from the cache
+    missedItemsCache = missedItemsCache.filter(item => !itemsToReschedule.find(updated => updated.id === item.id));
+    if (missedItemsCache.length === 0) {
+        missedItemsNotificationSent = false;
+    }
+
+    return { success: true, message: `Successfully rescheduled ${itemsToReschedule.length} item(s) to publish at approximately ${newScheduledDate.toLocaleTimeString()}.` };
 }

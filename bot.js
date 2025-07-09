@@ -44,6 +44,10 @@ function startBot(token, dependencies) {
                 const result = workerFunctions.clearMissedCacheFunc();
                 message.reply(`✅ ${result}`);
             }
+        } else if (command === 'rs') { // Add this new command handler
+                // Clean quotes from arguments
+                const cleanedArgs = args.map(arg => arg.replace(/"/g, ''));
+                await handleRescheduleCommand(message, cleanedArgs);
         }
     });
 
@@ -128,6 +132,25 @@ async function handleLoginStatusCommand(message) {
         message.reply(`❌ **Zedge Status:** Logged Out. \n**Reason:** ${result.error}`);
     }
 }
+async function handleRescheduleCommand(message, args) {
+    if (typeof workerFunctions.rescheduleMissedItemFunc !== 'function') {
+        return message.reply('Error: rescheduling function not available.');
+    }
+
+    if (args.length < 2) {
+        return message.reply("Invalid format. Use: `!RS <all | \"item title\"> <time>` (e.g., `!RS all 10m`)");
+    }
+
+    const timeString = args.pop(); // The time is the last argument
+    const identifier = args.join(' '); // The rest is the identifier
+
+    const result = await workerFunctions.rescheduleMissedItemFunc(identifier, timeString);
+    if (result.success) {
+        message.reply(`✅ **Success!** ${result.message}`);
+    } else {
+        message.reply(`❌ **Failed!** ${result.message}`);
+    }
+}
 
 function handleHelpCommand(message) {
     const helpMessage = [
@@ -140,6 +163,7 @@ function handleHelpCommand(message) {
         "**Commands for Missed Publications:**",
         "`!publish all-missed` - Publishes all items that were missed.",
         "`!publish <title>` - Publishes a specific missed item by its full title.",
+        "`!rs <all | \"title\"> <time>` - Reschedules item(s). Ex: `!rs all 10m`, `!rs \"My Title\" 1h`",
         "`!clear-missed` - Clears the missed items list after you have rescheduled them manually."
     ].join('\n');
     message.channel.send(helpMessage);
