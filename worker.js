@@ -1,4 +1,4 @@
-// worker.js - UPDATED with credential check.
+// worker.js - UPDATED with increased timeout.
 
 // --- Core Node.js Modules ---
 const fs = require('fs').promises;
@@ -56,9 +56,8 @@ async function saveData(appData) {
     }
 }
 
-// UPDATED: Added a pre-flight check for credentials.
+// UPDATED: Increased timeout for page navigation
 async function loginAndSaveSession() {
-    // PRE-FLIGHT CHECK: Ensure credentials are set in the environment.
     if (!process.env.ZEDGE_EMAIL || !process.env.ZEDGE_PASSWORD) {
         console.error('CRITICAL: ZEDGE_EMAIL or ZEDGE_PASSWORD environment variables are not set on the server.');
         return { loggedIn: false, error: 'Server is missing credentials. Please set them in the Render dashboard.' };
@@ -70,7 +69,8 @@ async function loginAndSaveSession() {
         const context = await browser.newContext();
         const page = await context.newPage();
         
-        await page.goto('https://account.zedge.net/v2/login-with-email');
+        // Increased timeout to 60 seconds and changed wait condition
+        await page.goto('https://account.zedge.net/v2/login-with-email', { waitUntil: 'domcontentloaded', timeout: 60000 });
         
         console.log('Filling email address...');
         await page.waitForSelector('input[type="email"]');
@@ -86,7 +86,7 @@ async function loginAndSaveSession() {
         console.log('Clicking final "Continue" button...');
         await page.click('button:has-text("Continue")');
 
-        await page.waitForURL('**/upload.zedge.net/**', { timeout: 30000 });
+        await page.waitForURL('**/upload.zedge.net/**', { timeout: 60000 });
         
         console.log('Login successful. Saving session state...');
         const storageState = await context.storageState();
