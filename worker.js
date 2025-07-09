@@ -228,7 +228,35 @@ async function processPublishingQueue() {
     isQueueProcessing = false;
 }
 
-async function executePublishWorkflow(scheduledItem) {
+async function executePublishWorkflow(scheduledItem) {async function executePublishWorkflow(scheduledItem) {
+    // This function runs after a successful or failed publish attempt
+    const result = await performPublish(scheduledItem);
+    const appData = await loadData(); // Load the most current data from the database
+
+    try {
+        if (appData.schedule && Array.isArray(appData.schedule)) {
+            const itemIndex = appData.schedule.findIndex(i => i.id === scheduledItem.id);
+
+            if (itemIndex > -1) {
+                // Update the status based on the result of the publish attempt
+                appData.schedule[itemIndex].status = result.status === 'success' ? 'Published' : 'Failed';
+                appData.schedule[itemIndex].failMessage = result.message;
+
+                // Save the updated data back to the database
+                await saveData(appData);
+
+                // Send a Discord notification about the outcome
+                const notificationMessage = result.status === 'success'
+                    ? `✅ Successfully published: "${scheduledItem.title}"`
+                    : `❌ Failed to publish: "${scheduledItem.title}".\nReason: ${result.message}`;
+                sendDiscordNotification(notificationMessage);
+            }
+        }
+    } catch (e) {
+        console.error('Failed to update database after publishing:', e);
+    }
+    return result;
+}
     const result = await performPublish(scheduledItem);
     const appData = await loadData();
     try {
