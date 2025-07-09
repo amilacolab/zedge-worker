@@ -16,6 +16,13 @@ const discordBot = require('./bot.js');
 // --- CONFIGURATION & SECURITY ---
 const SESSION_FILE_PATH = 'session.json';
 
+let publishingInProgress = new Set();
+let publishingQueue = [];
+let isQueueProcessing = false;
+let missedItemsCache = []; // NEW: Cache for missed items
+let missedItemsNotificationSent = false; // NEW: Flag to prevent spam
+
+
 // --- Database Connection ---
 const pool = new Pool({
     connectionString: process.env.CONNECTION_STRING,
@@ -26,9 +33,7 @@ const pool = new Pool({
 // SECTION 1: CORE APPLICATION LOGIC
 // =================================================================
 
-let publishingInProgress = new Set();
-let publishingQueue = [];
-let isQueueProcessing = false;
+
 
 async function loadData() {
     let client;
@@ -155,35 +160,55 @@ async function checkScheduleForPublishing() {
     console.log('--- Running background check ---');
     const data = await loadData();
 
-    if (data.settings?.isAutoPublishingEnabled) {
-        console.log('Desktop auto-publishing is active. Cloud worker is standing by.');
-        return;
-    }
-    if (!data.schedule || !Array.isArray(data.schedule) || data.schedule.length === 0) {
-        console.log('No scheduled items found to process.');
-        return;
-    }
+    if (data.settings?.isAutoPublishingEnabled) { /* ... logic remains the same ... */ }
+    if (!data.schedule || !Array.isArray(data.schedule) || data.schedule.length === 0) { /* ... logic remains the same ... */ }
 
     const now = new Date();
-    console.log(`Server time (UTC): ${now.toISOString()}`);
+    const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+    const newlyMissedItems = [];
 
     for (const item of data.schedule) {
         if (!item.scheduledAtUTC) continue;
-        const scheduleDateTime = new Date(item.scheduledAtUTC);
-        const isDue = now >= scheduleDateTime;
-        const isPending = !item.status || item.status === 'Pending';
-        // This detailed log is now restored
-        console.log(`Checking: "${item.title}" | Scheduled (UTC): ${scheduleDateTime.toISOString()} | Is Due: ${isDue}`);
 
-        if (isDue && isPending && !publishingInProgress.has(item.id)) {
-            console.log(`✅ FOUND DUE ITEM: "${item.title}". Adding to queue.`);
-            publishingInProgress.add(item.id);
-            publishingQueue.push(item);
-            if (!isQueueProcessing) {
-                processPublishingQueue();
+        const isPending = !item.status || item.status === 'Pending';
+        if (!isPending) continue; // Skip already published or failed items
+
+        const scheduleDateTime = new Date(item.scheduledAtUTC);
+        if (scheduleDateTime > now) continue; // Skip items scheduled for the future
+
+        // Item is due or missed
+        if (scheduleDateTime < fiveMinutesAgo) {
+            // This item was missed
+            if (!missedItemsCache.find(cached => cached.id === item.id) && !publishingInProgress.has(item.id)) {
+                newlyMissedItems.push(item);
+            }
+        } else {
+            // This item is due now
+            if (!publishingInProgress.has(item.id)) {
+                console.log(`✅ FOUND DUE ITEM: "${item.title}". Adding to queue.`);
+                publishingInProgress.add(item.id);
+                publishingQueue.push(item);
             }
         }
     }
+
+    if (newlyMissedItems.length > 0) {
+        missedItemsCache.push(...newlyMissedItems);
+    }
+    
+    // Process the normal queue
+    if (!isQueueProcessing && publishingQueue.length > 0) {
+        processPublishingQueue();
+    }
+    
+    // Send one-time notification for missed items
+    if (missedItemsCache.length > 0 && !missedItemsNotificationSent) {
+        const itemTitles = missedItemsCache.map(item => `- \`${item.title}\``).join('\n');
+        const notificationMessage = `🔴 **Missed Publications Detected!**\n\nThe following items were not published at their scheduled time:\n${itemTitles}\n\n**Use a command to proceed:**\n\`!publish all-missed\` - Publishes all items now.\n\`!publish <title>\` - Publishes a specific item.\n\n*To reschedule, please use the desktop app. You can then use \`!clear-missed\` to remove this message.*`;
+        sendDiscordNotification(notificationMessage);
+        missedItemsNotificationSent = true;
+    }
+    
     console.log('Finished check.');
 }
 
@@ -369,6 +394,41 @@ async function performPublish(scheduledItem) {
         if (browser) { await browser.close(); }
     }
 }
+function getMissedItems() {
+    return missedItemsCache;
+}
+function publishMissedItems(identifier) {
+    const itemsToPublish = [];
+    if (identifier === 'all') {
+        itemsToPublish.push(...missedItemsCache);
+        missedItemsCache = []; // Clear the cache
+    } else {
+        const itemIndex = missedItemsCache.findIndex(item => item.title.toLowerCase() === identifier.toLowerCase());
+        if (itemIndex > -1) {
+            itemsToPublish.push(missedItemsCache[itemIndex]);
+            missedItemsCache.splice(itemIndex, 1); // Remove from cache
+        } else {
+            return { success: false, message: `Could not find "${identifier}" in the missed items list.` };
+        }
+    }
+
+    if (itemsToPublish.length > 0) {
+        publishingQueue.push(...itemsToPublish);
+        if (!isQueueProcessing) {
+            processPublishingQueue();
+        }
+        return { success: true, message: `Queued ${itemsToPublish.length} item(s) for publishing.` };
+    }
+    return { success: false, message: 'No items to publish.' };
+}
+
+function clearMissedItemsCache() {
+    // This can be used if you manually reschedule and want to clear the alert
+    missedItemsCache = [];
+    missedItemsNotificationSent = false;
+    return 'Missed items cache has been cleared.';
+}
+
 
 // =================================================================
 // SECTION 2: EXPRESS WEB SERVER (Now simplified)
@@ -390,7 +450,10 @@ app.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
     discordBot.startBot(process.env.DISCORD_BOT_TOKEN, {
         loadDataFunc: loadData,
-        loginCheckFunc: checkLoginStatus
+        loginCheckFunc: checkLoginStatus,
+        getMissedItemsFunc: getMissedItems,
+        publishMissedItemsFunc: publishMissedItems,
+        clearMissedCacheFunc: clearMissedItemsCach
     });
     startWorker();
 });

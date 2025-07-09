@@ -37,6 +37,13 @@ function startBot(token, dependencies) {
             await handleLoginStatusCommand(message);
         } else if (command === 'help') {
             handleHelpCommand(message);
+        } else if (command === 'publish') { // NEW COMMAND
+            await handlePublishCommand(message, args);
+        } else if (command === 'clear-missed') { // NEW COMMAND
+            if (typeof workerFunctions.clearMissedCacheFunc === 'function') {
+                const result = workerFunctions.clearMissedCacheFunc();
+                message.reply(`✅ ${result}`);
+            }
         }
     });
 
@@ -47,6 +54,23 @@ function startBot(token, dependencies) {
 }
 
 // In zedge-worker/bot.js
+
+
+async function handlePublishCommand(message, args) {
+    if (typeof workerFunctions.publishMissedItemsFunc !== 'function') return message.reply('Error: publishing function not available.');
+
+    const identifier = args.join(' ').trim();
+    if (!identifier) {
+        return message.reply('Please specify `all-missed` or the title of a specific item. Example: `!publish all-missed`');
+    }
+
+    const result = workerFunctions.publishMissedItemsFunc(identifier);
+    if (result.success) {
+        message.reply(`✅ **Success!** ${result.message}`);
+    } else {
+        message.reply(`❌ **Failed!** ${result.message}`);
+    }
+}
 
 async function handleScheduleCommand(message) {
     if (typeof workerFunctions.loadDataFunc !== 'function') return message.reply('Error: data functions not available.');
@@ -111,7 +135,12 @@ function handleHelpCommand(message) {
         "`!help` - Shows this help message.",
         "`!schedule` - Lists upcoming, unpublished items.",
         "`!status <title>` - Searches for an item by its title and shows its status.",
-        "`!loginstatus` - Checks if the worker is currently logged in to Zedge."
+        "`!loginstatus` - Checks if the worker is currently logged in to Zedge.",
+        "",
+        "**Commands for Missed Publications:**",
+        "`!publish all-missed` - Publishes all items that were missed.",
+        "`!publish <title>` - Publishes a specific missed item by its full title.",
+        "`!clear-missed` - Clears the missed items list after you have rescheduled them manually."
     ].join('\n');
     message.channel.send(helpMessage);
 }
