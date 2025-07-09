@@ -481,7 +481,7 @@ app.listen(PORT, () => {
         loginCheckFunc: checkLoginStatus,
         getMissedItemsFunc: getMissedItems,
         publishMissedItemsFunc: publishMissedItems,
-        clearMissedCacheFunc: clearMissedItemsCach
+        clearMissedCacheFunc: clearMissedItemsCache
     });
     startWorker();
 });
