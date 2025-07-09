@@ -1,4 +1,4 @@
-// worker.js - UPDATED with increased timeout.
+// worker.js - FINAL with corrected post-login URL.
 
 // --- Core Node.js Modules ---
 const fs = require('fs').promises;
@@ -56,7 +56,7 @@ async function saveData(appData) {
     }
 }
 
-// UPDATED: Increased timeout for page navigation
+// FINALIZED: Waits for the correct post-login URL.
 async function loginAndSaveSession() {
     if (!process.env.ZEDGE_EMAIL || !process.env.ZEDGE_PASSWORD) {
         console.error('CRITICAL: ZEDGE_EMAIL or ZEDGE_PASSWORD environment variables are not set on the server.');
@@ -69,7 +69,6 @@ async function loginAndSaveSession() {
         const context = await browser.newContext();
         const page = await context.newPage();
         
-        // Increased timeout to 60 seconds and changed wait condition
         await page.goto('https://account.zedge.net/v2/login-with-email', { waitUntil: 'domcontentloaded', timeout: 60000 });
         
         console.log('Filling email address...');
@@ -86,7 +85,8 @@ async function loginAndSaveSession() {
         console.log('Clicking final "Continue" button...');
         await page.click('button:has-text("Continue")');
 
-        await page.waitForURL('**/upload.zedge.net/**', { timeout: 60000 });
+        // CORRECTED: Wait for the actual destination URL after login.
+        await page.waitForURL('**/account.zedge.net/v2/user**', { timeout: 60000 });
         
         console.log('Login successful. Saving session state...');
         const storageState = await context.storageState();
