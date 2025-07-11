@@ -459,6 +459,22 @@ app.get('/', (req, res) => {
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
+
+    // --- NEW DEBUGGING CODE START ---
+    console.log("--- [DEBUG] INITIALIZING BOT ---");
+    const token = process.env.DISCORD_BOT_TOKEN;
+
+    if (token && typeof token === 'string' && token.length > 10) {
+        console.log(`[DEBUG] Token has been found successfully.`);
+        console.log(`[DEBUG] Token Preview: ${token.substring(0, 5)}...${token.substring(token.length - 5)}`);
+    } else {
+        console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+        console.error("[DEBUG] CRITICAL FAILURE: The DISCORD_BOT_TOKEN is missing, empty, or invalid.");
+        console.error(`[DEBUG] Is token present? -> ${!!token}`);
+        console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+    }
+    // --- NEW DEBUGGING CODE END ---
+
     discordBot.startBot(process.env.DISCORD_BOT_TOKEN, {
         loadDataFunc: loadData,
         loginCheckFunc: checkLoginStatus,
@@ -467,6 +483,7 @@ app.listen(PORT, () => {
         clearMissedCacheFunc: clearMissedItemsCache,
         rescheduleMissedItemFunc: rescheduleMissedItem
     });
+
     startWorker();
 });
 
