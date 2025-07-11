@@ -123,13 +123,36 @@ async function handleStatusCommand(message, args) {
 }
 
 async function handleLoginStatusCommand(message) {
-    if (typeof workerFunctions.loginCheckFunc !== 'function') return message.reply('Error: status check function not available.');
-    message.reply('Checking Zedge login status, please wait...');
-    const result = await workerFunctions.loginCheckFunc();
-    if (result.loggedIn) {
-        message.reply('✅ **Zedge Status:** Currently Logged In.');
-    } else {
-        message.reply(`❌ **Zedge Status:** Logged Out. \n**Reason:** ${result.error}`);
+    // Check if the required function exists
+    if (typeof workerFunctions.loginCheckFunc !== 'function') {
+        return message.reply('Error: The status check function is not available.');
+    }
+
+    try {
+        // 1. Send the initial "please wait" message
+        await message.reply('Checking Zedge login status, please wait...');
+
+        // 2. Call the long-running function
+        const result = await workerFunctions.loginCheckFunc();
+
+        // 3. Send the final result
+        if (result.loggedIn) {
+            await message.reply('✅ **Zedge Status:** Currently Logged In.');
+        } else {
+            await message.reply(`❌ **Zedge Status:** Logged Out. \n**Reason:** ${result.error}`);
+        }
+    } catch (error) {
+        // 4. If any of the 'await' calls fail, log the detailed error
+        console.error(`[CRITICAL] Failed to send a reply in '#${message.channel.name}'.`, error);
+        
+        // Optionally, notify the user that the command failed if possible
+        if (!error.message.includes('Missing Permissions')) {
+            try {
+                await message.reply('An unexpected error occurred. Please check the server logs.');
+            } catch (e) {
+                console.error('[CRITICAL] Could not even send an error message. Check bot permissions.', e);
+            }
+        }
     }
 }
 async function handleRescheduleCommand(message, args) {
