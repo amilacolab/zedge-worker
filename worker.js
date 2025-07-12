@@ -337,7 +337,7 @@ async function performPublish(scheduledItem) {
         if (!targetProfileUrl) throw new Error(`Could not determine a valid profile URL for theme: "${theme}"`);
 
         console.log(`Loading profile: ${targetProfileName}`);
-        await page.goto(targetProfileUrl);
+        await page.goto(targetProfileUrl, { waitUntil: 'domcontentloaded' });
 
         console.log(`Searching for DRAFT: "${scheduledItem.title}"`);
         const foundAndClicked = await page.evaluate(async (itemTitle) => {
@@ -373,7 +373,7 @@ async function performPublish(scheduledItem) {
         if (!foundAndClicked) throw new Error(`Could not find a DRAFT with the title "${scheduledItem.title}"`);
         
         console.log("Found DRAFT, clicking it. Waiting for details page.");
-        await page.waitForTimeout(8000);
+        await page.waitForTimeout(8000); // Wait for details page to load
 
         const clickedPublish = await page.evaluate(() => {
             return new Promise((resolve) => {
@@ -396,46 +396,36 @@ async function performPublish(scheduledItem) {
             });
         });
 
-        if (!clickedPublish) throw new Error('The "Publish" button was not found on the details page.');
+        if (!clickedPublish) throw new Error('The "Publish" button was not found or was disabled.');
         
-        console.log("Clicked 'Publish'. Waiting for verification.");
-        await page.waitForTimeout(8000);
+        console.log("Clicked 'Publish'. Navigating back to profile for verification.");
+        await page.goto(targetProfileUrl, { waitUntil: 'domcontentloaded' });
         
-        console.log(`Navigating back to ${targetProfileName} profile for verification.`);
-        await page.goto(targetProfileUrl);
-        await page.reload({ waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(5000);
-
         console.log(`Verifying PUBLISHED status for: "${scheduledItem.title}"`);
-        const isPublished = await page.evaluate(async (itemTitle) => {
-             return new Promise((resolve) => {
-                const timeout = 45000, interval = 1500;
-                let elapsedTime = 0;
-                const verifyInterval = setInterval(() => {
-                    const elements = document.querySelectorAll('div[class*="StyledTitle"], div[title], span');
-                    for (const el of elements) {
-                        if (el.textContent.trim() === itemTitle || el.getAttribute('title') === itemTitle) {
-                            const container = el.parentElement;
-                            const statusElement = container ? container.querySelector('span[type="SUCCESS"]') : null;
-                            if (statusElement && statusElement.textContent.trim().toUpperCase() === 'PUBLISHED') {
-                                clearInterval(verifyInterval);
-                                resolve(true);
-                                return;
-                            }
+        try {
+            // This is the new, more reliable verification logic.
+            await page.waitForFunction(itemTitle => {
+                const elements = document.querySelectorAll('div[class*="StyledTitle"], div[title], span');
+                for (const el of elements) {
+                    if (el.textContent.trim() === itemTitle || el.getAttribute('title') === itemTitle) {
+                        // Find the container for the item to check its status
+                        const container = el.closest('div[role="button"], a')?.parentElement ?? el.parentElement;
+                        const statusElement = container ? container.querySelector('span[type="SUCCESS"]') : null;
+                        if (statusElement && statusElement.textContent.trim().toUpperCase() === 'PUBLISHED') {
+                            return true; // Found it!
                         }
                     }
-                    const loadMoreButton = Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.trim().toLowerCase() === 'load more');
-                    if (loadMoreButton) loadMoreButton.click();
-                    elapsedTime += interval;
-                    if (elapsedTime >= timeout) {
-                        clearInterval(verifyInterval);
-                        resolve(false);
-                    }
-                }, interval);
-            });
-        }, scheduledItem.title);
+                }
+                // If not found yet, try clicking "Load More"
+                const loadMoreButton = Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.trim().toLowerCase() === 'load more');
+                if (loadMoreButton) loadMoreButton.click();
+                return false; // Keep searching
+            }, scheduledItem.title, { timeout: 90000, polling: 5000 }); // Poll every 5s for up to 90s
 
-        if (!isPublished) throw new Error('Verification failed. Item status was not updated to "Published".');
+        } catch (e) {
+            console.error('Verification timed out.', e.message);
+            throw new Error('Verification failed. Item status was not updated to "Published".');
+        }
 
         console.log(`--- Successfully published and verified "${scheduledItem.title}" ---`);
         return { status: 'success', message: 'Published and verified successfully.' };
