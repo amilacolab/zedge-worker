@@ -1,8 +1,7 @@
-// worker.js - FINAL, CORRECTED VERSION
+// worker.js - CORRECTED FOR TELEGRAM
 
 // --- Core Node.js Modules ---
 const fs = require('fs').promises;
-const https = require('https');
 
 // --- Third-Party Packages ---
 const { Pool } = require('pg');
@@ -11,7 +10,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 
 // --- Local Modules ---
-const discordBot = require('./bot.js');
+const telegramBot = require('./telegram_bot.js'); // Only import the telegram bot
 
 // --- CONFIGURATION & SECURITY ---
 const SESSION_FILE_PATH = 'session.json';
@@ -19,8 +18,8 @@ const SESSION_FILE_PATH = 'session.json';
 let publishingInProgress = new Set();
 let publishingQueue = [];
 let isQueueProcessing = false;
-let missedItemsCache = []; 
-let missedItemsNotificationSent = false; 
+let missedItemsCache = [];
+let missedItemsNotificationSent = false;
 
 
 // --- Database Connection ---
@@ -38,11 +37,10 @@ async function loadData() {
     try {
         client = await pool.connect();
         const result = await client.query('SELECT data FROM app_data WHERE id = 1');
-        // Return default data structure if no data is found
         return result.rows.length > 0 && result.rows[0].data ? result.rows[0].data : { settings: {}, activeResults: {}, recycleBin: [], schedule: [] };
     } catch (err) {
         console.error('Error loading data from database', err);
-        return { settings: {}, activeResults: {}, recycleBin: [], schedule: [] }; // Return default structure on error
+        return { settings: {}, activeResults: {}, recycleBin: [], schedule: [] };
     } finally {
         if (client) client.release();
     }
@@ -138,20 +136,73 @@ async function checkLoginStatus() {
     }
 }
 
+// Replaced Discord function with a generic one that calls the bot
+function sendNotification(message) {
+    telegramBot.sendNotification(message);
+}
 
-function sendDiscordNotification(message) {
-    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-    if (!webhookUrl || !message) return;
-    try {
-        const payload = JSON.stringify({ content: message });
-        const options = { hostname: 'discord.com', path: new URL(webhookUrl).pathname, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } };
-        const req = https.request(options);
-        req.on('error', (e) => console.error('Discord notification error:', e.message));
-        req.write(payload);
-        req.end();
-    } catch (e) {
-        console.error('Invalid Webhook URL:', e.message);
+async function rescheduleMissedItem(identifier, timeString) {
+    const appData = await loadData();
+    if (!appData.schedule || !Array.isArray(appData.schedule)) {
+        return { success: false, message: "Schedule data is not available." };
     }
+
+    const now = new Date();
+    const value = parseInt(timeString.slice(0, -1), 10);
+    const unit = timeString.slice(-1).toLowerCase();
+
+    if (isNaN(value)) {
+        return { success: false, message: "Invalid time value. Please use a format like `10m`, `1h`, or `30s`." };
+    }
+
+    let newScheduledDate = new Date(now);
+    if (unit === 's') {
+        newScheduledDate.setSeconds(now.getSeconds() + value);
+    } else if (unit === 'm') {
+        newScheduledDate.setMinutes(now.getMinutes() + value);
+    } else if (unit === 'h') {
+        newScheduledDate.setHours(now.getHours() + value);
+    } else {
+        return { success: false, message: "Invalid time unit. Please use `s` (seconds), `m` (minutes), or `h` (hours)." };
+    }
+
+    const itemsToReschedule = [];
+    if (identifier.toLowerCase() === 'all') {
+        itemsToReschedule.push(...missedItemsCache);
+    } else {
+        const item = missedItemsCache.find(i => i.title.toLowerCase() === identifier.toLowerCase());
+        if (item) {
+            itemsToReschedule.push(item);
+        } else {
+            return { success: false, message: `Could not find "${identifier}" in the missed items list.` };
+        }
+    }
+
+    if (itemsToReschedule.length === 0) {
+        return { success: false, message: "No items to reschedule." };
+    }
+
+    itemsToReschedule.forEach(itemToUpdate => {
+        const scheduleIndex = appData.schedule.findIndex(i => i.id === itemToUpdate.id);
+        if (scheduleIndex > -1) {
+            appData.schedule[scheduleIndex].scheduledAtUTC = newScheduledDate.toISOString();
+            appData.schedule[scheduleIndex].status = 'Pending';
+        }
+    });
+
+    await saveData(appData);
+
+    if (identifier.toLowerCase() === 'all') {
+        missedItemsCache = [];
+    } else {
+        missedItemsCache = missedItemsCache.filter(item => !itemsToReschedule.find(updated => updated.id === item.id));
+    }
+    
+    if (missedItemsCache.length === 0) {
+        missedItemsNotificationSent = false;
+    }
+
+    return { success: true, message: `Successfully rescheduled ${itemsToReschedule.length} item(s) to publish at approximately ${newScheduledDate.toLocaleTimeString()}.` };
 }
 
 async function checkScheduleForPublishing() {
@@ -161,24 +212,18 @@ async function checkScheduleForPublishing() {
     
     const schedule = data.schedule || [];
     if (schedule.length > 0) {
-        // This log now correctly reflects that it WILL check the items.
         console.log(`[${schedule.length} items in schedule] Checking for due/missed items...`);
     } else {
         console.log("[Schedule is empty] No items to check.");
     }
-    
-    // **FIXED**: The entire block checking for isAutoPublishingEnabled has been REMOVED.
-    // The worker will now always process the schedule.
 
     const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
     const newlyMissedItems = [];
 
     for (const item of schedule) {
         if (!item.scheduledAtUTC) continue;
-
         const isPending = !item.status || item.status === 'Pending';
         if (!isPending) continue; 
-
         const scheduleDateTime = new Date(item.scheduledAtUTC);
         if (scheduleDateTime > now) continue; 
 
@@ -188,7 +233,6 @@ async function checkScheduleForPublishing() {
             }
         } else {
             if (!publishingInProgress.has(item.id)) {
-                // This log will now appear correctly when an item is due.
                 console.log(`✅ FOUND DUE ITEM: "${item.title}". Adding to queue.`);
                 publishingInProgress.add(item.id);
                 publishingQueue.push(item);
@@ -206,8 +250,8 @@ async function checkScheduleForPublishing() {
     
     if (missedItemsCache.length > 0 && !missedItemsNotificationSent) {
         const itemTitles = missedItemsCache.map(item => `- \`${item.title}\``).join('\n');
-        const notificationMessage = `🔴 **Missed Publications Detected!**\n\nThe following items were not published at their scheduled time:\n${itemTitles}\n\n**Use a command to proceed:**\n\`!publish all-missed\` - Publishes all items now.\n\`!publish <title>\` - Publishes a specific item.\n\n*To reschedule, please use the desktop app. You can then use \`!clear-missed\` to remove this message.*`;
-        sendDiscordNotification(notificationMessage);
+        const notificationMessage = `🔴 **Missed Publications Detected!**\n\nThe following items were not published at their scheduled time:\n${itemTitles}\n\n**Use a command to proceed:**\n\`/publish all-missed\` - Publishes all items now.\n\`/publish <title>\` - Publishes a specific item.\n\n*To reschedule, use the \`/rs\` command. You can then use \`/clearmissed\` to remove this message.*`;
+        sendNotification(notificationMessage);
         missedItemsNotificationSent = true;
     }
     
@@ -230,7 +274,6 @@ async function processPublishingQueue() {
     isQueueProcessing = false;
 }
 
-// **FIXED**: Corrected duplicated function and added logic to remove published items.
 async function executePublishWorkflow(scheduledItem) {
     const result = await performPublish(scheduledItem);
     const appData = await loadData(); 
@@ -245,16 +288,14 @@ async function executePublishWorkflow(scheduledItem) {
     if (itemIndex > -1) {
         const itemTitle = appData.schedule[itemIndex].title;
         if (result.status === 'success') {
-            // **FIXED**: Remove the item from the schedule array on success
             appData.schedule.splice(itemIndex, 1);
             const notificationMessage = `✅ **Published:** "${itemTitle}" has been successfully published and removed from the schedule.`;
-            sendDiscordNotification(notificationMessage);
+            sendNotification(notificationMessage);
         } else {
-            // **FIXED**: For failed items, update status and keep in schedule for review
             appData.schedule[itemIndex].status = 'Failed';
             appData.schedule[itemIndex].failMessage = result.message || 'An unknown error occurred during publishing.';
             const notificationMessage = `❌ **Failed to publish:** "${itemTitle}".\nReason: ${result.message}`;
-            sendDiscordNotification(notificationMessage);
+            sendNotification(notificationMessage);
         }
         await saveData(appData);
     } else {
@@ -411,14 +452,14 @@ function getMissedItems() {
 }
 function publishMissedItems(identifier) {
     const itemsToPublish = [];
-    if (identifier === 'all') {
+    if (identifier === 'all missed') { // Changed to match telegram bot
         itemsToPublish.push(...missedItemsCache);
-        missedItemsCache = []; // Clear the cache
+        missedItemsCache = [];
     } else {
         const itemIndex = missedItemsCache.findIndex(item => item.title.toLowerCase() === identifier.toLowerCase());
         if (itemIndex > -1) {
             itemsToPublish.push(missedItemsCache[itemIndex]);
-            missedItemsCache.splice(itemIndex, 1); // Remove from cache
+            missedItemsCache.splice(itemIndex, 1);
         } else {
             return { success: false, message: `Could not find "${identifier}" in the missed items list.` };
         }
@@ -460,22 +501,8 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
 
-    // --- NEW DEBUGGING CODE START ---
-    console.log("--- [DEBUG] INITIALIZING BOT ---");
-    const token = process.env.DISCORD_BOT_TOKEN;
-
-    if (token && typeof token === 'string' && token.length > 10) {
-        console.log(`[DEBUG] Token has been found successfully.`);
-        console.log(`[DEBUG] Token Preview: ${token.substring(0, 5)}...${token.substring(token.length - 5)}`);
-    } else {
-        console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-        console.error("[DEBUG] CRITICAL FAILURE: The DISCORD_BOT_TOKEN is missing, empty, or invalid.");
-        console.error(`[DEBUG] Is token present? -> ${!!token}`);
-        console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-    }
-    // --- NEW DEBUGGING CODE END ---
-
-    discordBot.startBot(process.env.DISCORD_BOT_TOKEN, {
+    // Start only the Telegram bot
+    telegramBot.startBot(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, {
         loadDataFunc: loadData,
         loginCheckFunc: checkLoginStatus,
         getMissedItemsFunc: getMissedItems,
@@ -483,7 +510,7 @@ app.listen(PORT, () => {
         clearMissedCacheFunc: clearMissedItemsCache,
         rescheduleMissedItemFunc: rescheduleMissedItem
     });
-
+    
     startWorker();
 });
 
@@ -498,71 +525,7 @@ function startWorker() {
     setInterval(async () => {
         const status = await checkLoginStatus();
         if (!status.loggedIn) {
-            sendDiscordNotification(`🔴 **Action Required:** The Zedge worker has been logged out and could not log back in. Manual intervention may be needed. \n**Reason:** ${status.error}`);
+            sendNotification(`🔴 **Action Required:** The Zedge worker has been logged out and could not log back in. Manual intervention may be needed. \n**Reason:** ${status.error}`);
         }
     }, 6 * 60 * 60 * 1000);
-}
-
-async function rescheduleMissedItem(identifier, timeString) {
-    const appData = await loadData();
-    if (!appData.schedule || !Array.isArray(appData.schedule)) {
-        return { success: false, message: "Schedule data is not available." };
-    }
-
-    const now = new Date();
-    const value = parseInt(timeString.slice(0, -1), 10);
-    const unit = timeString.slice(-1).toLowerCase();
-
-    if (isNaN(value)) {
-        return { success: false, message: "Invalid time value. Please use a format like `10m`, `1h`, or `30s`." };
-    }
-
-    let newScheduledDate = new Date(now);
-    if (unit === 's') {
-        newScheduledDate.setSeconds(now.getSeconds() + value);
-    } else if (unit === 'm') {
-        newScheduledDate.setMinutes(now.getMinutes() + value);
-    } else if (unit === 'h') {
-        newScheduledDate.setHours(now.getHours() + value);
-    } else {
-        return { success: false, message: "Invalid time unit. Please use `s` (seconds), `m` (minutes), or `h` (hours)." };
-    }
-
-    const itemsToReschedule = [];
-    if (identifier.toLowerCase() === 'all') {
-        itemsToReschedule.push(...missedItemsCache);
-    } else {
-        const item = missedItemsCache.find(i => i.title.toLowerCase() === identifier.toLowerCase());
-        if (item) {
-            itemsToReschedule.push(item);
-        } else {
-            return { success: false, message: `Could not find "${identifier}" in the missed items list.` };
-        }
-    }
-
-    if (itemsToReschedule.length === 0) {
-        return { success: false, message: "No items to reschedule." };
-    }
-
-    itemsToReschedule.forEach(itemToUpdate => {
-        const scheduleIndex = appData.schedule.findIndex(i => i.id === itemToUpdate.id);
-        if (scheduleIndex > -1) {
-            appData.schedule[scheduleIndex].scheduledAtUTC = newScheduledDate.toISOString();
-            appData.schedule[scheduleIndex].status = 'Pending';
-        }
-    });
-
-    await saveData(appData);
-
-    if (identifier.toLowerCase() === 'all') {
-        missedItemsCache = [];
-    } else {
-        missedItemsCache = missedItemsCache.filter(item => !itemsToReschedule.find(updated => updated.id === item.id));
-    }
-    
-    if (missedItemsCache.length === 0) {
-        missedItemsNotificationSent = false;
-    }
-
-    return { success: true, message: `Successfully rescheduled ${itemsToReschedule.length} item(s) to publish at approximately ${newScheduledDate.toLocaleTimeString()}.` };
 }
