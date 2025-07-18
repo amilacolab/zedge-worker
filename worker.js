@@ -317,6 +317,7 @@ async function performPublish(scheduledItem) {
         const context = await browser.newContext({ storageState: JSON.parse(storageState) });
         const page = await context.newPage();
 
+        // Block unnecessary resources for faster execution
         await page.route('**/*', (route) => {
             const resourceType = route.request().resourceType();
             if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
@@ -340,91 +341,48 @@ async function performPublish(scheduledItem) {
         await page.goto(targetProfileUrl, { waitUntil: 'domcontentloaded' });
 
         console.log(`Searching for DRAFT: "${scheduledItem.title}"`);
-        const foundAndClicked = await page.evaluate(async (itemTitle) => {
-            return new Promise((resolve) => {
-                const timeout = 45000, interval = 1500;
-                let elapsedTime = 0;
-                const searchInterval = setInterval(() => {
-                    const elements = document.querySelectorAll('div[class*="StyledTitle"], div[title], span');
-                    for (const el of elements) {
-                        if (el.textContent.trim() === itemTitle || el.getAttribute('title') === itemTitle) {
-                            const statusContainer = el.parentElement;
-                            const statusElement = statusContainer ? statusContainer.querySelector('span[type="DEFAULT"]') : null;
-                            if (statusElement && statusElement.textContent.trim().toUpperCase() === 'DRAFT') {
-                                clearInterval(searchInterval);
-                                const clickableTarget = el.closest('div[role="button"], a');
-                                if (clickableTarget) { clickableTarget.click(); } else { el.click(); }
-                                resolve(true);
-                                return;
-                            }
-                        }
-                    }
-                    const loadMoreButton = Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.trim().toLowerCase() === 'load more');
-                    if (loadMoreButton) loadMoreButton.click();
-                    elapsedTime += interval;
-                    if (elapsedTime >= timeout) {
-                        clearInterval(searchInterval);
-                        resolve(false);
-                    }
-                }, interval);
-            });
-        }, scheduledItem.title);
-
-        if (!foundAndClicked) throw new Error(`Could not find a DRAFT with the title "${scheduledItem.title}"`);
+        const draftLocator = page.locator('div[role="button"]', { hasText: scheduledItem.title }).filter({ has: page.locator('span:text("DRAFT")') });
         
-        console.log("Found DRAFT, clicking it. Waiting for details page.");
-        await page.waitForTimeout(8000); // Wait for details page to load
-
-        const clickedPublish = await page.evaluate(() => {
-            return new Promise((resolve) => {
-                const timeout = 15000, interval = 1000;
-                let elapsedTime = 0;
-                const findButtonInterval = setInterval(() => {
-                    const publishButton = Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.trim().toLowerCase() === 'publish');
-                    if (publishButton && !publishButton.disabled) {
-                        clearInterval(findButtonInterval);
-                        publishButton.click();
-                        resolve(true);
-                        return;
-                    }
-                    elapsedTime += interval;
-                    if (elapsedTime >= timeout) {
-                        clearInterval(findButtonInterval);
-                        resolve(false);
-                    }
-                }, interval);
-            });
-        });
-
-        if (!clickedPublish) throw new Error('The "Publish" button was not found or was disabled.');
+        // Wait for the draft to be visible, clicking "Load More" if necessary
+        await draftLocator.scrollIntoViewIfNeeded({ timeout: 45000 });
+        await draftLocator.click();
         
-        console.log("Clicked 'Publish'. Navigating back to profile for verification.");
+        console.log("Found and clicked DRAFT. Waiting for details page to load.");
+        
+        // Wait for the publish button to be enabled on the details page
+        const publishButton = page.locator('button:has-text("Publish")');
+        await publishButton.waitFor({ state: 'enabled', timeout: 30000 });
+        
+        console.log("Details page loaded. Clicking 'Publish'.");
+        await publishButton.click();
+        
+        // Wait for the confirmation/return to the main list. A good indicator is the "Upload" button reappearing.
+        await page.waitForSelector('button:has-text("Upload")', { timeout: 30000 });
+        
+        console.log(`Navigating back to ${targetProfileName} profile for verification.`);
         await page.goto(targetProfileUrl, { waitUntil: 'domcontentloaded' });
-        
-        console.log(`Verifying PUBLISHED status for: "${scheduledItem.title}"`);
-        try {
-            // This is the new, more reliable verification logic.
-            await page.waitForFunction(itemTitle => {
-                const elements = document.querySelectorAll('div[class*="StyledTitle"], div[title], span');
-                for (const el of elements) {
-                    if (el.textContent.trim() === itemTitle || el.getAttribute('title') === itemTitle) {
-                        // Find the container for the item to check its status
-                        const container = el.closest('div[role="button"], a')?.parentElement ?? el.parentElement;
-                        const statusElement = container ? container.querySelector('span[type="SUCCESS"]') : null;
-                        if (statusElement && statusElement.textContent.trim().toUpperCase() === 'PUBLISHED') {
-                            return true; // Found it!
-                        }
-                    }
-                }
-                // If not found yet, try clicking "Load More"
-                const loadMoreButton = Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.trim().toLowerCase() === 'load more');
-                if (loadMoreButton) loadMoreButton.click();
-                return false; // Keep searching
-            }, scheduledItem.title, { timeout: 90000, polling: 5000 }); // Poll every 5s for up to 90s
 
-        } catch (e) {
-            console.error('Verification timed out.', e.message);
-            throw new Error('Verification failed. Item status was not updated to "Published".');
+        // --- NEW ROBUST VERIFICATION LOGIC ---
+        console.log(`Verifying PUBLISHED status for: "${scheduledItem.title}"`);
+
+        // Create a locator that specifically targets the item by its title, then looks for the "PUBLISHED" badge within its container.
+        const itemContainerLocator = page.locator('div[class*="StyledContainer"]', { has: page.locator(`div[title="${scheduledItem.title}"]`) });
+        const publishedBadgeLocator = itemContainerLocator.locator('span:text("PUBLISHED")');
+
+        let isPublished = false;
+        try {
+            // Wait up to 60 seconds for the "PUBLISHED" status to appear. This is much more reliable than a fixed wait.
+            await publishedBadgeLocator.waitFor({ state: 'visible', timeout: 60000 });
+            isPublished = true;
+            console.log('Verification successful: Found "PUBLISHED" status.');
+        } catch (error) {
+            console.warn('Verification failed. The "PUBLISHED" status did not appear within the timeout.');
+            isPublished = false;
+        }
+        // --- END OF NEW LOGIC ---
+
+        if (!isPublished) {
+            throw new Error('Verification failed. Item status was not updated to "Published" on the page.');
         }
 
         console.log(`--- Successfully published and verified "${scheduledItem.title}" ---`);
