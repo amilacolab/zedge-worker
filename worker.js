@@ -373,7 +373,7 @@ async function performPublish(scheduledItem) {
         if (!foundAndClicked) throw new Error(`Could not find a DRAFT with the title "${scheduledItem.title}"`);
         
         console.log("Found DRAFT, clicking it. Waiting for details page.");
-        await page.waitForTimeout(8000); // Wait for details page to load
+        await page.waitForTimeout(8000); 
 
         const clickedPublish = await page.evaluate(() => {
             return new Promise((resolve) => {
@@ -399,33 +399,59 @@ async function performPublish(scheduledItem) {
         if (!clickedPublish) throw new Error('The "Publish" button was not found or was disabled.');
         
         console.log("Clicked 'Publish'. Navigating back to profile for verification.");
-        await page.goto(targetProfileUrl, { waitUntil: 'domcontentloaded' });
-        
+        await page.goto(targetProfileUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+        // --- NEW, ROBUST VERIFICATION LOGIC ---
         console.log(`Verifying PUBLISHED status for: "${scheduledItem.title}"`);
-        try {
-            // This is the new, more reliable verification logic.
-            await page.waitForFunction(itemTitle => {
+        let isVerified = false;
+        const verificationAttempts = 8; // Try for up to 2 minutes (8 attempts * 15s)
+
+        for (let i = 0; i < verificationAttempts; i++) {
+            console.log(`Verification attempt #${i + 1} of ${verificationAttempts}...`);
+
+            // This evaluate function checks the current DOM for the item's published status
+            const foundStatus = await page.evaluate((itemTitle) => {
                 const elements = document.querySelectorAll('div[class*="StyledTitle"], div[title], span');
                 for (const el of elements) {
                     if (el.textContent.trim() === itemTitle || el.getAttribute('title') === itemTitle) {
-                        // Find the container for the item to check its status
-                        const container = el.closest('div[role="button"], a')?.parentElement ?? el.parentElement;
-                        const statusElement = container ? container.querySelector('span[type="SUCCESS"]') : null;
-                        if (statusElement && statusElement.textContent.trim().toUpperCase() === 'PUBLISHED') {
-                            return true; // Found it!
+                        // Find the main clickable container for the item
+                        const container = el.closest('div[role="button"], a');
+                        if (container) {
+                            // Check for the "PUBLISHED" status element
+                            const successStatusEl = container.querySelector('span[type="SUCCESS"]');
+                            if (successStatusEl && successStatusEl.textContent.trim().toUpperCase() === 'PUBLISHED') {
+                                return 'PUBLISHED';
+                            }
                         }
                     }
                 }
-                // If not found yet, try clicking "Load More"
-                const loadMoreButton = Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.trim().toLowerCase() === 'load more');
-                if (loadMoreButton) loadMoreButton.click();
-                return false; // Keep searching
-            }, scheduledItem.title, { timeout: 90000, polling: 5000 }); // Poll every 5s for up to 90s
+                return 'NOT_FOUND'; // Did not find the element by title with a PUBLISHED status
+            }, scheduledItem.title);
 
-        } catch (e) {
-            console.error('Verification timed out.', e.message);
-            throw new Error('Verification failed. Item status was not updated to "Published".');
+            if (foundStatus === 'PUBLISHED') {
+                isVerified = true;
+                break; // Exit the loop on success
+            }
+
+            console.log('Status not "PUBLISHED" yet.');
+
+            // If not verified, try clicking "Load More" if it's available
+            const loadMoreButton = await page.$('button:has-text("Load More")');
+            if (loadMoreButton) {
+                console.log('Clicking "Load More" to search further...');
+                await loadMoreButton.click();
+                await page.waitForTimeout(5000); // Wait for new content to load
+            } else {
+                console.log('No "Load More" button found. All items are likely visible.');
+                // Wait before the next attempt, giving the page time to update.
+                await page.waitForTimeout(10000); 
+            }
         }
+
+        if (!isVerified) {
+            throw new Error('Verification failed. Item status was not updated to "Published" after multiple attempts.');
+        }
+        // --- END OF NEW VERIFICATION LOGIC ---
 
         console.log(`--- Successfully published and verified "${scheduledItem.title}" ---`);
         return { status: 'success', message: 'Published and verified successfully.' };
