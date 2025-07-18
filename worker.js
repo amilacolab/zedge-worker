@@ -317,7 +317,6 @@ async function performPublish(scheduledItem) {
         const context = await browser.newContext({ storageState: JSON.parse(storageState) });
         const page = await context.newPage();
 
-        // Block unnecessary resources for faster execution
         await page.route('**/*', (route) => {
             const resourceType = route.request().resourceType();
             if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
@@ -326,12 +325,12 @@ async function performPublish(scheduledItem) {
                 route.continue();
             }
         });
-        
+
         const ZEDGE_PROFILES = {
             Normal: 'https://upload.zedge.net/business/4e5d55ef-ea99-4913-90cf-09431dc1f28f/profiles/0c02b238-4bd0-479e-91f7-85c6df9c8b0f/content/WALLPAPER',
             Black: 'https://upload.zedge.net/business/4e5d55ef-ea99-4913-90cf-09431dc1f28f/profiles/a90052da-0ec5-4877-a73f-034c6da5d45a/content/WALLPAPER'
         };
-        
+
         const theme = scheduledItem.theme || '';
         const targetProfileName = theme.toLowerCase().includes('black') ? 'Black' : 'Normal';
         const targetProfileUrl = ZEDGE_PROFILES[targetProfileName];
@@ -341,49 +340,60 @@ async function performPublish(scheduledItem) {
         await page.goto(targetProfileUrl, { waitUntil: 'domcontentloaded' });
 
         console.log(`Searching for DRAFT: "${scheduledItem.title}"`);
+
+        // --- NEW & IMPROVED "FIND DRAFT" LOGIC ---
         const draftLocator = page.locator('div[role="button"]', { hasText: scheduledItem.title }).filter({ has: page.locator('span:text("DRAFT")') });
-        
-        // Wait for the draft to be visible, clicking "Load More" if necessary
-        await draftLocator.scrollIntoViewIfNeeded({ timeout: 45000 });
-        await draftLocator.click();
-        
-        console.log("Found and clicked DRAFT. Waiting for details page to load.");
-        
-        // Wait for the publish button to be enabled on the details page
-        const publishButton = page.locator('button:has-text("Publish")');
-        await publishButton.waitFor({ state: 'enabled', timeout: 30000 });
-        
-        console.log("Details page loaded. Clicking 'Publish'.");
-        await publishButton.click();
-        
-        // Wait for the confirmation/return to the main list. A good indicator is the "Upload" button reappearing.
-        await page.waitForSelector('button:has-text("Upload")', { timeout: 30000 });
-        
-        console.log(`Navigating back to ${targetProfileName} profile for verification.`);
-        await page.goto(targetProfileUrl, { waitUntil: 'domcontentloaded' });
+        const loadMoreButtonLocator = page.locator('button:has-text("Load More")');
 
-        // --- NEW ROBUST VERIFICATION LOGIC ---
-        console.log(`Verifying PUBLISHED status for: "${scheduledItem.title}"`);
+        const searchTimeout = 60000; // 60 seconds total to find the item
+        const startTime = Date.now();
+        let draftFound = false;
 
-        // Create a locator that specifically targets the item by its title, then looks for the "PUBLISHED" badge within its container.
-        const itemContainerLocator = page.locator('div[class*="StyledContainer"]', { has: page.locator(`div[title="${scheduledItem.title}"]`) });
-        const publishedBadgeLocator = itemContainerLocator.locator('span:text("PUBLISHED")');
+        while (Date.now() - startTime < searchTimeout) {
+            if (await draftLocator.isVisible()) {
+                await draftLocator.click();
+                draftFound = true;
+                break;
+            }
 
-        let isPublished = false;
-        try {
-            // Wait up to 60 seconds for the "PUBLISHED" status to appear. This is much more reliable than a fixed wait.
-            await publishedBadgeLocator.waitFor({ state: 'visible', timeout: 60000 });
-            isPublished = true;
-            console.log('Verification successful: Found "PUBLISHED" status.');
-        } catch (error) {
-            console.warn('Verification failed. The "PUBLISHED" status did not appear within the timeout.');
-            isPublished = false;
+            const isLoadMoreVisible = await loadMoreButtonLocator.isVisible();
+            if (isLoadMoreVisible) {
+                console.log('Draft not visible, clicking "Load More"...');
+                await loadMoreButtonLocator.click();
+                await page.waitForTimeout(2000); // Wait for content to load
+            } else {
+                // If the "Load More" button is gone, we've loaded everything.
+                await page.waitForTimeout(2000); // Final wait for any straggling elements
+                if (await draftLocator.isVisible()) {
+                    await draftLocator.click();
+                    draftFound = true;
+                }
+                break; // Exit loop, nothing more to load
+            }
+        }
+
+        if (!draftFound) {
+            throw new Error(`Could not find a DRAFT with the title "${scheduledItem.title}" after clicking "Load More".`);
         }
         // --- END OF NEW LOGIC ---
 
-        if (!isPublished) {
-            throw new Error('Verification failed. Item status was not updated to "Published" on the page.');
-        }
+        console.log("Found and clicked DRAFT. Waiting for details page to load.");
+        const publishButton = page.locator('button:has-text("Publish")');
+        await publishButton.waitFor({ state: 'enabled', timeout: 30000 });
+
+        console.log("Details page loaded. Clicking 'Publish'.");
+        await publishButton.click();
+
+        await page.waitForSelector('button:has-text("Upload")', { timeout: 30000 });
+
+        console.log(`Navigating back to ${targetProfileName} profile for verification.`);
+        await page.goto(targetProfileUrl, { waitUntil: 'domcontentloaded' });
+
+        console.log(`Verifying PUBLISHED status for: "${scheduledItem.title}"`);
+        const itemContainerLocator = page.locator('div[class*="StyledContainer"]', { has: page.locator(`div[title="${scheduledItem.title}"]`) });
+        const publishedBadgeLocator = itemContainerLocator.locator('span:text("PUBLISHED")');
+        
+        await publishedBadgeLocator.waitFor({ state: 'visible', timeout: 60000 });
 
         console.log(`--- Successfully published and verified "${scheduledItem.title}" ---`);
         return { status: 'success', message: 'Published and verified successfully.' };
