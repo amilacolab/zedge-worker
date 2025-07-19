@@ -37,7 +37,7 @@ let activeDbIndex = 0; // 0-based index for primaryPools array
 
 
 // =================================================================
-// SECTION 1: DATABASE MANAGEMENT (NEW)
+// SECTION 1: DATABASE MANAGEMENT
 // =================================================================
 
 /**
@@ -129,8 +129,7 @@ async function migrateData(sourcePool, destPool) {
 
 /**
  * The main command handler for switching the active database.
- * Implements the requested logic: Current -> Backup -> Next.
- * If Current -> Backup fails, it falls back to Backup -> Next.
+ * This function is now corrected to properly update the backup database.
  */
 async function switchDatabase() {
     if (!backupPool) {
@@ -153,58 +152,60 @@ async function switchDatabase() {
 
     sendNotification(`🔄 Starting database switch from **${currentDbName}** to **${nextDbName}**...`);
 
-    // Step 1: Try to back up the current active database
-    console.log(`Attempting to back up data from ${currentDbName} to the backup DB...`);
-    const backupResult = await migrateData(activePool, backupPool);
-
-    if (!backupResult.success) {
-        sendNotification(`⚠️ **Warning:** Could not back up from **${currentDbName}** (it may be over limits). Proceeding with the last known good backup.`);
-    } else {
-        sendNotification(`✅ Data from **${currentDbName}** successfully backed up.`);
-    }
-
-    // Step 2: Migrate from the backup database to the next primary database
-    console.log(`Attempting to migrate data from backup DB to ${nextDbName}...`);
-    const restoreResult = await migrateData(backupPool, nextPool);
-
-    if (!restoreResult.success) {
-        const message = `❌ **CRITICAL FAILURE:** Could not migrate data to **${nextDbName}**. The database switch has been aborted. The active DB is still **${currentDbName}**. Reason: ${restoreResult.error}`;
-        console.error(message);
-        sendNotification(message);
-        return;
-    }
-
-    // Step 3: Update the active DB index within the migrated data itself
-    let finalData = restoreResult.data;
-    if (!finalData.db_config) finalData.db_config = {};
-    finalData.db_config.active_index = nextDbIndex;
-
-    let nextClient;
+    // --- (CORRECTED LOGIC) ---
+    let clientNext = null;
+    let clientBackup = null;
     try {
-        nextClient = await nextPool.connect();
-        await nextClient.query('UPDATE app_data SET data = $1 WHERE id = 1', [finalData]);
-        console.log(`Updated active_index in ${nextDbName} to ${nextDbIndex}.`);
+        // Step 1: Migrate data from the current active DB to the backup.
+        const backupResult = await migrateData(activePool, backupPool);
+        if (!backupResult.success) {
+            sendNotification(`⚠️ **Warning:** Could not back up from **${currentDbName}**. Attempting to proceed with the last known good backup.`);
+        } else {
+            sendNotification(`✅ Data from **${currentDbName}** successfully backed up.`);
+        }
+
+        // Step 2: Migrate data from the backup to the new primary DB.
+        const restoreResult = await migrateData(backupPool, nextPool);
+        if (!restoreResult.success) {
+            throw new Error(`Could not migrate data to ${nextDbName}. Reason: ${restoreResult.error}`);
+        }
+
+        // Step 3: Update the index in the data object and save it to BOTH the new primary and the backup.
+        let finalData = restoreResult.data;
+        if (!finalData.db_config) finalData.db_config = {};
+        finalData.db_config.active_index = nextDbIndex;
+
+        console.log(`Updating index to ${nextDbIndex} in ${nextDbName} and the backup DB.`);
+
+        // Update new primary DB
+        clientNext = await nextPool.connect();
+        await clientNext.query('UPDATE app_data SET data = $1 WHERE id = 1', [finalData]);
+
+        // Update backup DB (This is the critical fix)
+        clientBackup = await backupPool.connect();
+        await clientBackup.query('UPDATE app_data SET data = $1 WHERE id = 1', [finalData]);
+
+        // Step 4: Finalize the switch in the application's memory.
+        activePool = nextPool;
+        activeDbIndex = nextDbIndex;
+
+        const successMessage = `✅ **Database Switch Complete!** The active database is now **${nextDbName}**.`;
+        console.log(successMessage);
+        sendNotification(successMessage);
+
     } catch (err) {
-        const message = `❌ **CRITICAL FAILURE:** Migrated data but failed to update the active index in ${nextDbName}. Aborting switch. Active DB is still **${currentDbName}**.`;
-        console.error(message, err);
-        sendNotification(message);
-        return;
+        const errorMessage = `❌ **CRITICAL FAILURE:** The database switch has been aborted. The active DB is still **${currentDbName}**. Reason: ${err.message}`;
+        console.error(errorMessage);
+        sendNotification(errorMessage);
     } finally {
-        if (nextClient) nextClient.release();
+        if (clientNext) clientNext.release();
+        if (clientBackup) clientBackup.release();
     }
-
-    // Step 4: Finalize the switch in the application
-    activePool = nextPool;
-    activeDbIndex = nextDbIndex;
-
-    const successMessage = `✅ **Database Switch Complete!** The active database is now **${nextDbName}**.`;
-    console.log(successMessage);
-    sendNotification(successMessage);
 }
 
 
 // =================================================================
-// SECTION 2: CORE APPLICATION LOGIC (MODIFIED)
+// SECTION 2: CORE APPLICATION LOGIC
 // =================================================================
 
 async function loadData() {
@@ -324,7 +325,6 @@ async function checkLoginStatus() {
     }
 }
 
-// Replaced Discord function with a generic one that calls the bot
 function sendNotification(message) {
     telegramBot.sendNotification(message);
 }
@@ -750,4 +750,4 @@ function startWorker() {
 }
 
 // Start the application
-startApp();
+startApp()
