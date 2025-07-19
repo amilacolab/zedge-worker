@@ -1,4 +1,9 @@
-// telegram_bot.js - CORRECTED WITH RESCHEDULE AND NOTIFICATIONS
+// =================================================================
+//                 ZEDGE PUBLISHER WORKER (telegram_bot.js)
+// =================================================================
+// This module initializes and manages the Telegram bot, handling all
+// user commands and sending notifications from the worker.
+// =================================================================
 
 const TelegramBot = require('node-telegram-bot-api');
 
@@ -6,6 +11,12 @@ let bot;
 let workerFunctions = {};
 let notificationChatId; // To store the chat ID for notifications
 
+/**
+ * Starts the Telegram bot and sets up all command listeners.
+ * @param {string} token - The Telegram bot token.
+ * @param {string} chatId - The chat ID to send notifications to.
+ * @param {object} dependencies - An object containing functions from the worker.
+ */
 function startBot(token, chatId, dependencies) {
     if (!token) {
         console.log('Telegram Bot Token not provided, bot will not start.');
@@ -22,47 +33,57 @@ function startBot(token, chatId, dependencies) {
 
     // --- Command Handlers ---
 
-    bot.onText(/\/help|\/start/, (msg) => {
-        handleHelpCommand(msg.chat.id);
-    });
+    bot.on('message', (msg) => {
+        const text = msg.text;
+        const chatId = msg.chat.id;
 
-    bot.onText(/\/schedule/, async (msg) => {
-        await handleScheduleCommand(msg.chat.id);
-    });
+        if (!text) return;
 
-    bot.onText(/\/loginstatus/, async (msg) => {
-        await handleLoginStatusCommand(msg.chat.id);
-    });
-    
-    bot.onText(/\/status (.+)/, async (msg, match) => {
-        await handleStatusCommand(msg.chat.id, match[1]);
-    });
-
-    bot.onText(/\/publish (.+)/, (msg, match) => {
-        handlePublishCommand(msg.chat.id, match[1]);
-    });
-
-    // Added the missing Reschedule command
-    bot.onText(/\/rs (.+)/, async (msg, match) => {
-        await handleRescheduleCommand(msg.chat.id, match[1].split(' '));
-    });
-
-    bot.onText(/\/clearmissed/, (msg) => {
-        if (typeof workerFunctions.clearMissedCacheFunc === 'function') {
-            const result = workerFunctions.clearMissedCacheFunc();
-            bot.sendMessage(msg.chat.id, `✅ ${result}`);
+        // Using an if/else if structure for clarity
+        if (text.startsWith('/help') || text.startsWith('/start')) {
+            handleHelpCommand(chatId);
+        } else if (text.startsWith('/schedule')) {
+            handleScheduleCommand(chatId);
+        } else if (text.startsWith('/loginstatus')) {
+            handleLoginStatusCommand(chatId);
+        } else if (text.startsWith('/status')) {
+            const match = text.match(/\/status (.+)/);
+            if (match) handleStatusCommand(chatId, match[1]);
+        } else if (text.startsWith('/publish')) {
+            const match = text.match(/\/publish (.+)/);
+            if (match) handlePublishCommand(chatId, match[1]);
+        } else if (text.startsWith('/rs')) {
+            const match = text.match(/\/rs (.+)/);
+            if (match) handleRescheduleCommand(chatId, match[1].split(' '));
+        } else if (text.startsWith('/clearmissed')) {
+            handleClearMissedCommand(chatId);
+        } else if (text.startsWith('/switchdb')) {
+            // This command takes no arguments
+            if (dependencies.switchDatabaseFunc) {
+                bot.sendMessage(chatId, "Command received. Initiating database switch. This may take a moment...");
+                // This is an async function, but we don't need to wait for it here.
+                // It will send its own notifications.
+                dependencies.switchDatabaseFunc();
+            } else {
+                bot.sendMessage(chatId, "Database switching is not configured on the server.");
+            }
         }
     });
 }
 
-// Function for worker to send notifications
+/**
+ * Sends a notification message to the pre-configured chat ID.
+ * @param {string} message - The message to send.
+ */
 function sendNotification(message) {
     if (bot && notificationChatId) {
         bot.sendMessage(notificationChatId, message, { parse_mode: 'Markdown' });
     } else {
+        // Fallback to console if bot is not running
         console.log(`[Notification] ${message}`);
     }
 }
+
 
 // --- Command Logic Functions ---
 
@@ -73,6 +94,7 @@ function handleHelpCommand(chatId) {
         "`/schedule` - Lists upcoming, unpublished items.",
         "`/status <title>` - Searches for an item by title.",
         "`/loginstatus` - Checks if the worker is logged in to Zedge.",
+        "`/switchdb` - Migrates data and switches to the next primary database.",
         "",
         "**Commands for Missed Publications:**",
         "`/publish all-missed` - Publishes all missed items.",
@@ -85,11 +107,13 @@ function handleHelpCommand(chatId) {
 
 async function handleScheduleCommand(chatId) {
     if (typeof workerFunctions.loadDataFunc !== 'function') return bot.sendMessage(chatId, 'Error: data functions not available.');
-    
+
     const currentData = await workerFunctions.loadDataFunc();
     const upcomingItems = [];
 
     if (currentData.schedule && Array.isArray(currentData.schedule)) {
+        // Sort by date ascending to show nearest first
+        currentData.schedule.sort((a, b) => new Date(a.scheduledAtUTC) - new Date(b.scheduledAtUTC));
         currentData.schedule.forEach(item => {
             if (item.status !== 'Published') {
                 upcomingItems.push(`- \`${item.title}\` on ${new Date(item.scheduledAtUTC).toLocaleString()}`);
@@ -106,7 +130,7 @@ async function handleScheduleCommand(chatId) {
 
 async function handleLoginStatusCommand(chatId) {
     if (typeof workerFunctions.loginCheckFunc !== 'function') return bot.sendMessage(chatId, 'Error: status check function not available.');
-    
+
     await bot.sendMessage(chatId, 'Checking Zedge login status, please wait...');
     const result = await workerFunctions.loginCheckFunc();
 
@@ -119,7 +143,7 @@ async function handleLoginStatusCommand(chatId) {
 
 async function handleStatusCommand(chatId, query) {
     if (typeof workerFunctions.loadDataFunc !== 'function') return bot.sendMessage(chatId, 'Error: data functions not available.');
-    
+
     const currentData = await workerFunctions.loadDataFunc();
     const matches = [];
 
@@ -130,7 +154,7 @@ async function handleStatusCommand(chatId, query) {
             }
         });
     }
-    
+
     if (matches.length > 0) {
         bot.sendMessage(chatId, `**Found ${matches.length} match(es) for "${query}":**\n${matches.join('\n')}`, { parse_mode: 'Markdown' });
     } else {
@@ -149,7 +173,6 @@ function handlePublishCommand(chatId, identifier) {
     }
 }
 
-// Added missing reschedule logic
 async function handleRescheduleCommand(chatId, args) {
     if (typeof workerFunctions.rescheduleMissedItemFunc !== 'function') {
         return bot.sendMessage(chatId, 'Error: rescheduling function not available.');
@@ -159,7 +182,7 @@ async function handleRescheduleCommand(chatId, args) {
         return bot.sendMessage(chatId, "Invalid format. Use: `/rs <all | \"item title\"> <time>` (e.g., `/rs all 10m`)");
     }
 
-    const timeString = args.pop(); 
+    const timeString = args.pop();
     const identifier = args.join(' ').replace(/"/g, ''); // The rest is the identifier, remove quotes
 
     const result = await workerFunctions.rescheduleMissedItemFunc(identifier, timeString);
@@ -167,6 +190,13 @@ async function handleRescheduleCommand(chatId, args) {
         bot.sendMessage(chatId, `✅ **Success!** ${result.message}`);
     } else {
         bot.sendMessage(chatId, `❌ **Failed!** ${result.message}`);
+    }
+}
+
+function handleClearMissedCommand(chatId) {
+    if (typeof workerFunctions.clearMissedCacheFunc === 'function') {
+        const result = workerFunctions.clearMissedCacheFunc();
+        bot.sendMessage(chatId, `✅ ${result}`);
     }
 }
 
