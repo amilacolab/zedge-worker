@@ -1,4 +1,11 @@
-// worker.js - CORRECTED FOR TELEGRAM
+// =================================================================
+//                 ZEDGE PUBLISHER WORKER (worker.js)
+// =================================================================
+// This worker runs on a server (e.g., Render) and handles all
+// background tasks, including checking the schedule, publishing
+// items via Playwright, and interacting with the Telegram bot.
+// It now supports multiple primary databases and a backup for resilience.
+// =================================================================
 
 // --- Core Node.js Modules ---
 const fs = require('fs').promises;
@@ -12,7 +19,7 @@ const bodyParser = require('body-parser');
 // --- Local Modules ---
 const telegramBot = require('./telegram_bot.js'); // Only import the telegram bot
 
-// --- CONFIGURATION & SECURITY ---
+// --- CONFIGURATION & STATE ---
 const SESSION_FILE_PATH = 'session.json';
 
 let publishingInProgress = new Set();
@@ -21,26 +28,199 @@ let isQueueProcessing = false;
 let missedItemsCache = [];
 let missedItemsNotificationSent = false;
 
+// --- Database Connection Variables ---
+// These will be initialized dynamically
+let primaryPools = [];
+let backupPool;
+let activePool;
+let activeDbIndex = 0; // 0-based index for primaryPools array
 
-// --- Database Connection ---
-const pool = new Pool({
-    connectionString: process.env.CONNECTION_STRING,
-    ssl: { require: true },
-});
 
 // =================================================================
-// SECTION 1: CORE APPLICATION LOGIC
+// SECTION 1: DATABASE MANAGEMENT (NEW)
+// =================================================================
+
+/**
+ * Dynamically finds and initializes connection pools based on environment variables.
+ * It identifies PRIMARY_DB_1, PRIMARY_DB_2, etc., and a single BACKUP_DB.
+ */
+async function initializeDatabases() {
+    console.log("Initializing database connections...");
+    // Find all primary database connection strings
+    for (let i = 1; ; i++) {
+        const connString = process.env[`PRIMARY_DB_${i}`];
+        if (connString) {
+            primaryPools.push(new Pool({ connectionString: connString, ssl: { require: true } }));
+            console.log(`Found and created pool for PRIMARY_DB_${i}`);
+        } else {
+            break; // Stop when no more PRIMARY_DB_X is found
+        }
+    }
+
+    if (primaryPools.length === 0) {
+        throw new Error("CRITICAL: No PRIMARY_DB_X environment variables found. Application cannot start.");
+    }
+
+    // Initialize backup database pool
+    const backupConnString = process.env.BACKUP_DB;
+    if (backupConnString) {
+        backupPool = new Pool({ connectionString: backupConnString, ssl: { require: true } });
+        console.log("Found and created pool for BACKUP_DB.");
+    } else {
+        console.warn("WARNING: BACKUP_DB environment variable not set. The backup and restore functionality will be disabled.");
+    }
+
+    // Set the initial active pool to the first one
+    activePool = primaryPools[0];
+    activeDbIndex = 0;
+    console.log(`Initial active database is PRIMARY_DB_1 (index 0).`);
+
+    // Determine the truly active database from saved data
+    try {
+        const initialData = await loadData(); // This will use the default activePool (DB 1)
+        const savedIndex = initialData?.db_config?.active_index;
+
+        if (savedIndex !== undefined && savedIndex < primaryPools.length && savedIndex !== activeDbIndex) {
+            console.log(`Data indicates active DB should be index ${savedIndex}. Switching...`);
+            activeDbIndex = savedIndex;
+            activePool = primaryPools[activeDbIndex];
+            console.log(`Successfully switched to PRIMARY_DB_${savedIndex + 1} as the active pool.`);
+        } else {
+            console.log("Sticking with default database or saved index is current.");
+        }
+    } catch (err) {
+        console.error("Could not verify active DB index from initial data load. Using default.", err);
+    }
+}
+
+/**
+ * Copies all application data from a source pool to a destination pool.
+ * @param {Pool} sourcePool - The database pool to read from.
+ * @param {Pool} destPool - The database pool to write to.
+ * @returns {Promise<{success: boolean, data: object|null, error: string|null}>}
+ */
+async function migrateData(sourcePool, destPool) {
+    let sourceClient, destClient;
+    try {
+        console.log("Starting data migration...");
+        sourceClient = await sourcePool.connect();
+        const result = await sourceClient.query('SELECT data FROM app_data WHERE id = 1');
+        const dataToMigrate = result.rows.length > 0 ? result.rows[0].data : null;
+
+        if (!dataToMigrate) {
+            return { success: false, data: null, error: "No data found in the source database." };
+        }
+
+        console.log("Data retrieved from source. Writing to destination...");
+        destClient = await destPool.connect();
+        await destClient.query('INSERT INTO app_data (id, data) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET data = $1', [dataToMigrate]);
+
+        console.log("Migration successful.");
+        return { success: true, data: dataToMigrate, error: null };
+
+    } catch (err) {
+        console.error('Error during data migration:', err);
+        return { success: false, data: null, error: err.message };
+    } finally {
+        if (sourceClient) sourceClient.release();
+        if (destClient) destClient.release();
+    }
+}
+
+/**
+ * The main command handler for switching the active database.
+ * Implements the requested logic: Current -> Backup -> Next.
+ * If Current -> Backup fails, it falls back to Backup -> Next.
+ */
+async function switchDatabase() {
+    if (!backupPool) {
+        const message = "🔴 **DB Switch Failed:** The `BACKUP_DB` is not configured. Cannot perform migration.";
+        console.error(message);
+        sendNotification(message);
+        return;
+    }
+    if (primaryPools.length < 2) {
+        const message = "🔴 **DB Switch Failed:** Only one primary database is configured. Nothing to switch to.";
+        console.error(message);
+        sendNotification(message);
+        return;
+    }
+
+    const nextDbIndex = (activeDbIndex + 1) % primaryPools.length;
+    const currentDbName = `PRIMARY_DB_${activeDbIndex + 1}`;
+    const nextDbName = `PRIMARY_DB_${nextDbIndex + 1}`;
+    const nextPool = primaryPools[nextDbIndex];
+
+    sendNotification(`🔄 Starting database switch from **${currentDbName}** to **${nextDbName}**...`);
+
+    // Step 1: Try to back up the current active database
+    console.log(`Attempting to back up data from ${currentDbName} to the backup DB...`);
+    const backupResult = await migrateData(activePool, backupPool);
+
+    if (!backupResult.success) {
+        sendNotification(`⚠️ **Warning:** Could not back up from **${currentDbName}** (it may be over limits). Proceeding with the last known good backup.`);
+    } else {
+        sendNotification(`✅ Data from **${currentDbName}** successfully backed up.`);
+    }
+
+    // Step 2: Migrate from the backup database to the next primary database
+    console.log(`Attempting to migrate data from backup DB to ${nextDbName}...`);
+    const restoreResult = await migrateData(backupPool, nextPool);
+
+    if (!restoreResult.success) {
+        const message = `❌ **CRITICAL FAILURE:** Could not migrate data to **${nextDbName}**. The database switch has been aborted. The active DB is still **${currentDbName}**. Reason: ${restoreResult.error}`;
+        console.error(message);
+        sendNotification(message);
+        return;
+    }
+
+    // Step 3: Update the active DB index within the migrated data itself
+    let finalData = restoreResult.data;
+    if (!finalData.db_config) finalData.db_config = {};
+    finalData.db_config.active_index = nextDbIndex;
+
+    let nextClient;
+    try {
+        nextClient = await nextPool.connect();
+        await nextClient.query('UPDATE app_data SET data = $1 WHERE id = 1', [finalData]);
+        console.log(`Updated active_index in ${nextDbName} to ${nextDbIndex}.`);
+    } catch (err) {
+        const message = `❌ **CRITICAL FAILURE:** Migrated data but failed to update the active index in ${nextDbName}. Aborting switch. Active DB is still **${currentDbName}**.`;
+        console.error(message, err);
+        sendNotification(message);
+        return;
+    } finally {
+        if (nextClient) nextClient.release();
+    }
+
+    // Step 4: Finalize the switch in the application
+    activePool = nextPool;
+    activeDbIndex = nextDbIndex;
+
+    const successMessage = `✅ **Database Switch Complete!** The active database is now **${nextDbName}**.`;
+    console.log(successMessage);
+    sendNotification(successMessage);
+}
+
+
+// =================================================================
+// SECTION 2: CORE APPLICATION LOGIC (MODIFIED)
 // =================================================================
 
 async function loadData() {
     let client;
     try {
-        client = await pool.connect();
+        // Now uses the globally active pool
+        client = await activePool.connect();
         const result = await client.query('SELECT data FROM app_data WHERE id = 1');
-        return result.rows.length > 0 && result.rows[0].data ? result.rows[0].data : { settings: {}, activeResults: {}, recycleBin: [], schedule: [] };
+        return result.rows.length > 0 && result.rows[0].data ? result.rows[0].data : { settings: {}, activeResults: {}, recycleBin: [], schedule: [], db_config: { active_index: 0 } };
     } catch (err) {
         console.error('Error loading data from database', err);
-        return { settings: {}, activeResults: {}, recycleBin: [], schedule: [] };
+        // Add a check for a specific error related to compute limits
+        if (err.message && err.message.includes("compute endpoint is suspended")) {
+            sendNotification(`🔴 **CRITICAL:** The active database (**PRIMARY_DB_${activeDbIndex + 1}**) has reached its compute limit. Use the \`/switchdb\` command to migrate to the next one.`);
+        }
+        return { settings: {}, activeResults: {}, recycleBin: [], schedule: [], db_config: { active_index: 0 } };
     } finally {
         if (client) client.release();
     }
@@ -49,7 +229,15 @@ async function loadData() {
 async function saveData(appData) {
     let client;
     try {
-        client = await pool.connect();
+        // Ensure db_config is preserved
+        if (!appData.db_config) {
+            appData.db_config = { active_index: activeDbIndex };
+        } else {
+            appData.db_config.active_index = activeDbIndex;
+        }
+
+        // Now uses the globally active pool
+        client = await activePool.connect();
         await client.query('INSERT INTO app_data (id, data) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET data = $1', [appData]);
     } catch (err) {
         console.error('Error saving data to database', err);
@@ -69,29 +257,29 @@ async function loginAndSaveSession() {
     try {
         const context = await browser.newContext();
         const page = await context.newPage();
-        
+
         await page.goto('https://account.zedge.net/v2/login-with-email', { waitUntil: 'domcontentloaded', timeout: 60000 });
-        
+
         console.log('Filling email address...');
         await page.waitForSelector('input[type="email"]');
         await page.fill('input[type="email"]', process.env.ZEDGE_EMAIL);
-        
+
         console.log('Clicking "Continue with password"...');
         await page.click('button:has-text("Continue with password")');
-        
+
         console.log('Waiting for password page...');
         await page.waitForSelector('input[type="password"]');
         await page.fill('input[type="password"]', process.env.ZEDGE_PASSWORD);
-        
+
         console.log('Clicking final "Continue" button...');
         await page.click('button:has-text("Continue")');
 
         await page.waitForURL('**/account.zedge.net/v2/user**', { timeout: 60000 });
-        
+
         console.log('Login successful. Saving session state...');
         const storageState = await context.storageState();
         await fs.writeFile(SESSION_FILE_PATH, JSON.stringify(storageState));
-        
+
         console.log('Session file has been created/updated.');
         return { loggedIn: true };
     } catch (error) {
@@ -116,11 +304,11 @@ async function checkLoginStatus() {
         const context = await browser.newContext({ storageState: JSON.parse(storageState) });
         const page = await context.newPage();
         await page.goto('https://upload.zedge.net/', { waitUntil: 'domcontentloaded' });
-        
+
         const finalUrl = page.url();
         if (finalUrl.includes('account.zedge.net')) {
-             console.log('Session is invalid or expired. Attempting to re-login.');
-             return await loginAndSaveSession();
+            console.log('Session is invalid or expired. Attempting to re-login.');
+            return await loginAndSaveSession();
         }
         return { loggedIn: true };
 
@@ -197,7 +385,7 @@ async function rescheduleMissedItem(identifier, timeString) {
     } else {
         missedItemsCache = missedItemsCache.filter(item => !itemsToReschedule.find(updated => updated.id === item.id));
     }
-    
+
     if (missedItemsCache.length === 0) {
         missedItemsNotificationSent = false;
     }
@@ -207,9 +395,9 @@ async function rescheduleMissedItem(identifier, timeString) {
 
 async function checkScheduleForPublishing() {
     const now = new Date();
-    console.log(`--- Running background check [UTC: ${now.toUTCString()}] ---`);
+    console.log(`--- Running background check [UTC: ${now.toUTCString()}] [DB: ${activeDbIndex + 1}] ---`);
     const data = await loadData();
-    
+
     const schedule = data.schedule || [];
     if (schedule.length > 0) {
         console.log(`[${schedule.length} items in schedule] Checking for due/missed items...`);
@@ -223,9 +411,9 @@ async function checkScheduleForPublishing() {
     for (const item of schedule) {
         if (!item.scheduledAtUTC) continue;
         const isPending = !item.status || item.status === 'Pending';
-        if (!isPending) continue; 
+        if (!isPending) continue;
         const scheduleDateTime = new Date(item.scheduledAtUTC);
-        if (scheduleDateTime > now) continue; 
+        if (scheduleDateTime > now) continue;
 
         if (scheduleDateTime < fiveMinutesAgo) {
             if (!missedItemsCache.find(cached => cached.id === item.id) && !publishingInProgress.has(item.id)) {
@@ -243,18 +431,18 @@ async function checkScheduleForPublishing() {
     if (newlyMissedItems.length > 0) {
         missedItemsCache.push(...newlyMissedItems);
     }
-    
+
     if (!isQueueProcessing && publishingQueue.length > 0) {
         processPublishingQueue();
     }
-    
+
     if (missedItemsCache.length > 0 && !missedItemsNotificationSent) {
         const itemTitles = missedItemsCache.map(item => `- \`${item.title}\``).join('\n');
         const notificationMessage = `🔴 **Missed Publications Detected!**\n\nThe following items were not published at their scheduled time:\n${itemTitles}\n\n**Use a command to proceed:**\n\`/publish all-missed\` - Publishes all items now.\n\`/publish <title>\` - Publishes a specific item.\n\n*To reschedule, use the \`/rs\` command. You can then use \`/clearmissed\` to remove this message.*`;
         sendNotification(notificationMessage);
         missedItemsNotificationSent = true;
     }
-    
+
     console.log('--- Finished check. ---');
 }
 
@@ -276,7 +464,7 @@ async function processPublishingQueue() {
 
 async function executePublishWorkflow(scheduledItem) {
     const result = await performPublish(scheduledItem);
-    const appData = await loadData(); 
+    const appData = await loadData();
 
     if (!appData.schedule || !Array.isArray(appData.schedule)) {
         console.error('Could not find schedule array in data to update status.');
@@ -299,7 +487,7 @@ async function executePublishWorkflow(scheduledItem) {
         }
         await saveData(appData);
     } else {
-         console.log(`Item "${scheduledItem.title}" was already processed or removed from the schedule.`);
+        console.log(`Item "${scheduledItem.title}" was already processed or removed from the schedule.`);
     }
 }
 
@@ -325,12 +513,12 @@ async function performPublish(scheduledItem) {
                 route.continue();
             }
         });
-        
+
         const ZEDGE_PROFILES = {
             Normal: 'https://upload.zedge.net/business/4e5d55ef-ea99-4913-90cf-09431dc1f28f/profiles/0c02b238-4bd0-479e-91f7-85c6df9c8b0f/content/WALLPAPER',
             Black: 'https://upload.zedge.net/business/4e5d55ef-ea99-4913-90cf-09431dc1f28f/profiles/a90052da-0ec5-4877-a73f-034c6da5d45a/content/WALLPAPER'
         };
-        
+
         const theme = scheduledItem.theme || '';
         const targetProfileName = theme.toLowerCase().includes('black') ? 'Black' : 'Normal';
         const targetProfileUrl = ZEDGE_PROFILES[targetProfileName];
@@ -371,7 +559,7 @@ async function performPublish(scheduledItem) {
         }, scheduledItem.title);
 
         if (!foundAndClicked) throw new Error(`Could not find a DRAFT with the title "${scheduledItem.title}"`);
-        
+
         console.log("Found DRAFT, clicking it. Waiting for details page.");
         await page.waitForTimeout(8000);
 
@@ -397,11 +585,11 @@ async function performPublish(scheduledItem) {
         });
 
         if (!clickedPublish) throw new Error('The "Publish" button was not found or was disabled.');
-        
+
         // **THIS IS THE CRITICAL VERIFICATION LOGIC THAT WORKS**
         console.log("Clicked 'Publish'. Waiting for system to process...");
         await page.waitForTimeout(8000); // Wait for Zedge to process the click
-        
+
         console.log(`Navigating back to ${targetProfileName} profile for verification.`);
         await page.goto(targetProfileUrl);
         await page.reload({ waitUntil: 'domcontentloaded' }); // Force a reload
@@ -409,7 +597,7 @@ async function performPublish(scheduledItem) {
 
         console.log(`Verifying PUBLISHED status for: "${scheduledItem.title}"`);
         const isPublished = await page.evaluate(async (itemTitle) => {
-             return new Promise((resolve) => {
+            return new Promise((resolve) => {
                 const timeout = 60000, interval = 2000; // Increased timeout to 60s
                 let elapsedTime = 0;
                 const verifyInterval = setInterval(() => {
@@ -486,40 +674,53 @@ function clearMissedItemsCache() {
 
 
 // =================================================================
-// SECTION 2: EXPRESS WEB SERVER
+// SECTION 3: EXPRESS WEB SERVER
 // =================================================================
 
 const app = express();
 app.use(bodyParser.json());
 
 app.get('/', (req, res) => {
-    res.status(200).send('Zedge Publisher worker is alive and running.');
+    res.status(200).send(`Zedge Publisher worker is alive and running. Active DB: PRIMARY_DB_${activeDbIndex + 1}`);
 });
 
+
 // =================================================================
-// SECTION 3: WORKER INITIALIZATION
+// SECTION 4: WORKER INITIALIZATION (MODIFIED)
 // =================================================================
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`);
 
-    // Start only the Telegram bot
-    telegramBot.startBot(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, {
-        loadDataFunc: loadData,
-        loginCheckFunc: checkLoginStatus,
-        getMissedItemsFunc: getMissedItems,
-        publishMissedItemsFunc: publishMissedItems,
-        clearMissedCacheFunc: clearMissedItemsCache,
-        rescheduleMissedItemFunc: rescheduleMissedItem
-    });
-    
-    startWorker();
-});
+// Main application startup function
+async function startApp() {
+    try {
+        await initializeDatabases();
+
+        app.listen(PORT, () => {
+            console.log(`Server listening on port ${PORT}`);
+
+            // Pass the new switchDatabase function to the bot
+            telegramBot.startBot(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, {
+                loadDataFunc: loadData,
+                loginCheckFunc: checkLoginStatus,
+                getMissedItemsFunc: getMissedItems,
+                publishMissedItemsFunc: publishMissedItems,
+                clearMissedCacheFunc: clearMissedItemsCache,
+                rescheduleMissedItemFunc: rescheduleMissedItem,
+                switchDatabaseFunc: switchDatabase // <-- New function passed here
+            });
+
+            startWorker();
+        });
+    } catch (error) {
+        console.error("Failed to start the application:", error.message);
+        process.exit(1); // Exit if databases can't be initialized
+    }
+}
 
 function startWorker() {
     console.log('Zedge Worker started. Initializing background tasks...');
-    setTimeout(checkScheduleForPublishing, 15 * 1000); 
+    setTimeout(checkScheduleForPublishing, 15 * 1000);
 
     // Main scheduling check
     setInterval(checkScheduleForPublishing, 60 * 1000);
@@ -531,4 +732,22 @@ function startWorker() {
             sendNotification(`🔴 **Action Required:** The Zedge worker has been logged out and could not log back in. Manual intervention may be needed. \n**Reason:** ${status.error}`);
         }
     }, 6 * 60 * 60 * 1000);
+
+    // Daily backup job
+    if (backupPool) {
+        console.log("Scheduling daily backup job.");
+        setInterval(async () => {
+            console.log("--- Running daily backup job ---");
+            const backupResult = await migrateData(activePool, backupPool);
+            if (backupResult.success) {
+                console.log("Daily backup completed successfully.");
+            } else {
+                console.error("Daily backup failed:", backupResult.error);
+                sendNotification(`⚠️ **Warning:** The scheduled daily database backup failed. Reason: ${backupResult.error}`);
+            }
+        }, 24 * 60 * 60 * 1000); // 24 hours
+    }
 }
+
+// Start the application
+startApp();
