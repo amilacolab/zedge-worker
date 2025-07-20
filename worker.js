@@ -7,6 +7,8 @@
 // It now supports multiple primary databases and a backup for resilience.
 // =================================================================
 
+// --- SECTION 1: IMPORTS & GLOBAL SETUP ---
+
 // --- Core Node.js Modules ---
 const fs = require('fs').promises;
 
@@ -17,7 +19,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 
 // --- Local Modules ---
-const telegramBot = require('./telegram_bot.js'); // Only import the telegram bot
+const telegramBot = require('./telegram_bot.js');
 
 // --- CONFIGURATION & STATE ---
 const SESSION_FILE_PATH = 'session.json';
@@ -29,75 +31,86 @@ let missedItemsCache = [];
 let missedItemsNotificationSent = false;
 
 // --- Database Connection Variables ---
-// These will be initialized dynamically
 let primaryPools = [];
 let backupPool;
 let activePool;
-let activeDbIndex = 0; // 0-based index for primaryPools array
+let activeDbIndex = 0;
 
 
 // =================================================================
-// SECTION 1: DATABASE MANAGEMENT
+// SECTION 2: DATABASE MANAGEMENT
 // =================================================================
 
 /**
- * Dynamically finds and initializes connection pools based on environment variables.
- * It identifies PRIMARY_DB_1, PRIMARY_DB_2, etc., and a single BACKUP_DB.
+ * Initializes all database pools from environment variables.
  */
 async function initializeDatabases() {
     console.log("Initializing database connections...");
-    // Find all primary database connection strings
     for (let i = 1; ; i++) {
         const connString = process.env[`PRIMARY_DB_${i}`];
         if (connString) {
             primaryPools.push(new Pool({ connectionString: connString, ssl: { require: true } }));
             console.log(`Found and created pool for PRIMARY_DB_${i}`);
         } else {
-            break; // Stop when no more PRIMARY_DB_X is found
+            break;
         }
     }
 
     if (primaryPools.length === 0) {
-        throw new Error("CRITICAL: No PRIMARY_DB_X environment variables found. Application cannot start.");
+        throw new Error("CRITICAL: No PRIMARY_DB_X environment variables found.");
     }
 
-    // Initialize backup database pool
     const backupConnString = process.env.BACKUP_DB;
     if (backupConnString) {
         backupPool = new Pool({ connectionString: backupConnString, ssl: { require: true } });
         console.log("Found and created pool for BACKUP_DB.");
     } else {
-        console.warn("WARNING: BACKUP_DB environment variable not set. The backup and restore functionality will be disabled.");
+        console.warn("WARNING: BACKUP_DB is not configured.");
     }
 
-    // Set the initial active pool to the first one
+    // Default to the first DB, but this will be corrected by reconciliation.
     activePool = primaryPools[0];
     activeDbIndex = 0;
-    console.log(`Initial active database is PRIMARY_DB_1 (index 0).`);
+}
 
-    // Determine the truly active database from saved data
+/**
+ * (NEW) Compares the worker's active DB index with the one from the backup DB
+ * and corrects it on startup if there is a mismatch.
+ */
+async function reconcileActiveDbIndex() {
+    if (!backupPool) {
+        console.log("Skipping DB index reconciliation on startup: No backup DB configured.");
+        return;
+    }
+
+    console.log("Reconciling active DB index with backup database on startup...");
+    let client;
     try {
-        const initialData = await loadData(); // This will use the default activePool (DB 1)
-        const savedIndex = initialData?.db_config?.active_index;
+        client = await backupPool.connect();
+        const res = await client.query('SELECT data FROM app_data WHERE id = 1');
 
-        if (savedIndex !== undefined && savedIndex < primaryPools.length && savedIndex !== activeDbIndex) {
-            console.log(`Data indicates active DB should be index ${savedIndex}. Switching...`);
-            activeDbIndex = savedIndex;
-            activePool = primaryPools[activeDbIndex];
-            console.log(`Successfully switched to PRIMARY_DB_${savedIndex + 1} as the active pool.`);
-        } else {
-            console.log("Sticking with default database or saved index is current.");
+        if (res.rows.length > 0 && res.rows[0].data) {
+            const backupIndex = res.rows[0].data?.db_config?.active_index;
+
+            if (backupIndex !== undefined && backupIndex !== activeDbIndex && backupIndex < primaryPools.length) {
+                console.log(`Discrepancy found! Worker default index: ${activeDbIndex}, Backup index: ${backupIndex}. Correcting worker state.`);
+                activeDbIndex = backupIndex;
+                activePool = primaryPools[backupIndex];
+                console.log(`Worker has successfully switched to PRIMARY_DB_${backupIndex + 1}.`);
+            } else {
+                console.log("Worker and backup DB indexes match. No action needed.");
+            }
         }
-    } catch (err) {
-        console.error("Could not verify active DB index from initial data load. Using default.", err);
+    } catch (error) {
+        console.error("CRITICAL: Failed to reconcile DB index with backup on startup:", error.message);
+        sendNotification(`🔴 **CRITICAL ALERT:** The server worker failed to read the configuration from the backup database on startup. It may be operating on the wrong database. Please investigate. \nReason: ${error.message}`);
+    } finally {
+        if (client) client.release();
     }
 }
 
 /**
  * Copies all application data from a source pool to a destination pool.
- * @param {Pool} sourcePool - The database pool to read from.
- * @param {Pool} destPool - The database pool to write to.
- * @returns {Promise<{success: boolean, data: object|null, error: string|null}>}
  */
 async function migrateData(sourcePool, destPool) {
     let sourceClient, destClient;
@@ -129,17 +142,10 @@ async function migrateData(sourcePool, destPool) {
 
 /**
  * The main command handler for switching the active database.
- * This function is now corrected to properly update the backup database.
  */
 async function switchDatabase() {
-    if (!backupPool) {
-        const message = "🔴 **DB Switch Failed:** The `BACKUP_DB` is not configured. Cannot perform migration.";
-        console.error(message);
-        sendNotification(message);
-        return;
-    }
-    if (primaryPools.length < 2) {
-        const message = "🔴 **DB Switch Failed:** Only one primary database is configured. Nothing to switch to.";
+    if (!backupPool || primaryPools.length < 2) {
+        const message = "🔴 **DB Switch Failed:** Not enough databases are configured.";
         console.error(message);
         sendNotification(message);
         return;
@@ -152,40 +158,33 @@ async function switchDatabase() {
 
     sendNotification(`🔄 Starting database switch from **${currentDbName}** to **${nextDbName}**...`);
 
-    // --- (CORRECTED LOGIC) ---
     let clientNext = null;
     let clientBackup = null;
     try {
-        // Step 1: Migrate data from the current active DB to the backup.
         const backupResult = await migrateData(activePool, backupPool);
         if (!backupResult.success) {
-            sendNotification(`⚠️ **Warning:** Could not back up from **${currentDbName}**. Attempting to proceed with the last known good backup.`);
+            sendNotification(`⚠️ **Warning:** Could not back up from **${currentDbName}**. Proceeding with last known backup.`);
         } else {
             sendNotification(`✅ Data from **${currentDbName}** successfully backed up.`);
         }
 
-        // Step 2: Migrate data from the backup to the new primary DB.
         const restoreResult = await migrateData(backupPool, nextPool);
         if (!restoreResult.success) {
-            throw new Error(`Could not migrate data to ${nextDbName}. Reason: ${restoreResult.error}`);
+            throw new Error(`Could not migrate to ${nextDbName}. Reason: ${restoreResult.error}`);
         }
 
-        // Step 3: Update the index in the data object and save it to BOTH the new primary and the backup.
         let finalData = restoreResult.data;
         if (!finalData.db_config) finalData.db_config = {};
         finalData.db_config.active_index = nextDbIndex;
 
         console.log(`Updating index to ${nextDbIndex} in ${nextDbName} and the backup DB.`);
 
-        // Update new primary DB
         clientNext = await nextPool.connect();
         await clientNext.query('UPDATE app_data SET data = $1 WHERE id = 1', [finalData]);
 
-        // Update backup DB (This is the critical fix)
         clientBackup = await backupPool.connect();
         await clientBackup.query('UPDATE app_data SET data = $1 WHERE id = 1', [finalData]);
 
-        // Step 4: Finalize the switch in the application's memory.
         activePool = nextPool;
         activeDbIndex = nextDbIndex;
 
@@ -194,7 +193,7 @@ async function switchDatabase() {
         sendNotification(successMessage);
 
     } catch (err) {
-        const errorMessage = `❌ **CRITICAL FAILURE:** The database switch has been aborted. The active DB is still **${currentDbName}**. Reason: ${err.message}`;
+        const errorMessage = `❌ **CRITICAL FAILURE:** Switch aborted. Active DB is still **${currentDbName}**. Reason: ${err.message}`;
         console.error(errorMessage);
         sendNotification(errorMessage);
     } finally {
@@ -205,21 +204,19 @@ async function switchDatabase() {
 
 
 // =================================================================
-// SECTION 2: CORE APPLICATION LOGIC
+// SECTION 3: CORE APPLICATION LOGIC
 // =================================================================
 
 async function loadData() {
     let client;
     try {
-        // Now uses the globally active pool
         client = await activePool.connect();
         const result = await client.query('SELECT data FROM app_data WHERE id = 1');
         return result.rows.length > 0 && result.rows[0].data ? result.rows[0].data : { settings: {}, activeResults: {}, recycleBin: [], schedule: [], db_config: { active_index: 0 } };
     } catch (err) {
         console.error('Error loading data from database', err);
-        // Add a check for a specific error related to compute limits
         if (err.message && err.message.includes("compute endpoint is suspended")) {
-            sendNotification(`🔴 **CRITICAL:** The active database (**PRIMARY_DB_${activeDbIndex + 1}**) has reached its compute limit. Use the \`/switchdb\` command to migrate to the next one.`);
+            sendNotification(`🔴 **CRITICAL:** The active database (**PRIMARY_DB_${activeDbIndex + 1}**) has reached its compute limit. Use the \`/switchdb\` command.`);
         }
         return { settings: {}, activeResults: {}, recycleBin: [], schedule: [], db_config: { active_index: 0 } };
     } finally {
@@ -230,14 +227,12 @@ async function loadData() {
 async function saveData(appData) {
     let client;
     try {
-        // Ensure db_config is preserved
         if (!appData.db_config) {
             appData.db_config = { active_index: activeDbIndex };
         } else {
             appData.db_config.active_index = activeDbIndex;
         }
 
-        // Now uses the globally active pool
         client = await activePool.connect();
         await client.query('INSERT INTO app_data (id, data) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET data = $1', [appData]);
     } catch (err) {
@@ -586,19 +581,18 @@ async function performPublish(scheduledItem) {
 
         if (!clickedPublish) throw new Error('The "Publish" button was not found or was disabled.');
 
-        // **THIS IS THE CRITICAL VERIFICATION LOGIC THAT WORKS**
         console.log("Clicked 'Publish'. Waiting for system to process...");
-        await page.waitForTimeout(8000); // Wait for Zedge to process the click
+        await page.waitForTimeout(8000);
 
         console.log(`Navigating back to ${targetProfileName} profile for verification.`);
         await page.goto(targetProfileUrl);
-        await page.reload({ waitUntil: 'domcontentloaded' }); // Force a reload
-        await page.waitForTimeout(5000); // Wait for the page to update
+        await page.reload({ waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(5000);
 
         console.log(`Verifying PUBLISHED status for: "${scheduledItem.title}"`);
         const isPublished = await page.evaluate(async (itemTitle) => {
             return new Promise((resolve) => {
-                const timeout = 60000, interval = 2000; // Increased timeout to 60s
+                const timeout = 60000, interval = 2000;
                 let elapsedTime = 0;
                 const verifyInterval = setInterval(() => {
                     const elements = document.querySelectorAll('div[class*="StyledTitle"], div[title], span');
@@ -643,7 +637,7 @@ function getMissedItems() {
 }
 function publishMissedItems(identifier) {
     const itemsToPublish = [];
-    if (identifier === 'all missed') { // Changed to match telegram bot
+    if (identifier === 'all missed') {
         itemsToPublish.push(...missedItemsCache);
         missedItemsCache = [];
     } else {
@@ -674,7 +668,7 @@ function clearMissedItemsCache() {
 
 
 // =================================================================
-// SECTION 3: EXPRESS WEB SERVER
+// SECTION 4: EXPRESS WEB SERVER & APP STARTUP
 // =================================================================
 
 const app = express();
@@ -684,22 +678,19 @@ app.get('/', (req, res) => {
     res.status(200).send(`Zedge Publisher worker is alive and running. Active DB: PRIMARY_DB_${activeDbIndex + 1}`);
 });
 
-
-// =================================================================
-// SECTION 4: WORKER INITIALIZATION (MODIFIED)
-// =================================================================
-
 const PORT = process.env.PORT || 10000;
 
-// Main application startup function
+// (MODIFIED) Main application startup function
 async function startApp() {
     try {
         await initializeDatabases();
 
+        // (NEW) Reconcile the active database index on startup
+        await reconcileActiveDbIndex();
+
         app.listen(PORT, () => {
             console.log(`Server listening on port ${PORT}`);
 
-            // Pass the new switchDatabase function to the bot
             telegramBot.startBot(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, {
                 loadDataFunc: loadData,
                 loginCheckFunc: checkLoginStatus,
@@ -707,14 +698,14 @@ async function startApp() {
                 publishMissedItemsFunc: publishMissedItems,
                 clearMissedCacheFunc: clearMissedItemsCache,
                 rescheduleMissedItemFunc: rescheduleMissedItem,
-                switchDatabaseFunc: switchDatabase // <-- New function passed here
+                switchDatabaseFunc: switchDatabase
             });
 
             startWorker();
         });
     } catch (error) {
         console.error("Failed to start the application:", error.message);
-        process.exit(1); // Exit if databases can't be initialized
+        process.exit(1);
     }
 }
 
@@ -750,4 +741,4 @@ function startWorker() {
 }
 
 // Start the application
-startApp()
+startApp();
