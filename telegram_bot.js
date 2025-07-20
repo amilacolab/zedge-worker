@@ -117,6 +117,7 @@ async function handleScheduleCommand(chatId) {
         currentData.schedule.forEach(item => {
             if (item.status !== 'Published') {
                 upcomingItems.push(`- \`${item.title}\` on ${new Date(item.scheduledAtUTC).toLocaleString()}`);
+
             }
         });
     }
