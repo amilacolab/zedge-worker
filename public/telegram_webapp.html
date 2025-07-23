@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zedge Publisher Status</title>
+    <!-- Telegram Web App Script -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        /* CSS styles adapted from your provided files for a consistent theme */
+        :root {
+            --bg-color: #1e1e1e;
+            --primary-color: #2a2a2a;
+            --secondary-color: #333333;
+            --text-color: #d4d4d4;
+            --accent-color: #007acc;
+            --border-color: #444444;
+            --success-color: #4CAF50;
+            --danger-color: #f44336;
+            --warning-color: #ff9800;
+            --font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+            overflow-x: hidden;
+            font-family: var(--font-family);
+            background-color: var(--bg-color);
+            color: var(--text-color);
+        }
+
+        .app-container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+
+        .app-header {
+            padding: 15px;
+            background-color: var(--primary-color);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-shrink: 0;
+            gap: 20px;
+            border-radius: 8px 8px 0 0;
+        }
+
+        .app-header h1 {
+            margin: 0;
+            font-size: 1.2em;
+            color: var(--accent-color);
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+
+        .dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            transition: background-color 0.3s ease;
+        }
+
+        .dot.red { background-color: var(--danger-color); }
+        .dot.green { background-color: var(--success-color); }
+        .dot.orange { background-color: var(--warning-color); }
+
+        .schedule-list {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 10px 0;
+            background-color: var(--primary-color);
+            border-radius: 0 0 8px 8px;
+        }
+
+        .placeholder {
+            padding: 40px 20px;
+            text-align: center;
+            color: #888;
+            font-size: 1.1em;
+        }
+
+        .scheduled-item {
+            background-color: var(--secondary-color);
+            border: 1px solid var(--border-color);
+            border-left-width: 4px;
+            border-radius: 6px;
+            padding: 15px;
+            margin: 0 10px 10px;
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 15px;
+            align-items: center;
+            transition: box-shadow 0.3s ease, border-color 0.3s ease;
+        }
+
+        .item-info .item-title {
+            font-weight: bold;
+            margin: 0 0 10px 0;
+            font-size: 1.1em;
+        }
+
+        .item-info .item-details {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .item-info .item-theme,
+        .item-info .item-time {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.8em;
+            opacity: 0.8;
+            margin: 0;
+        }
+
+        .item-info svg {
+            flex-shrink: 0;
+        }
+
+        .item-actions {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 8px;
+        }
+
+        .item-status {
+            font-size: 0.8em;
+            font-weight: bold;
+            padding: 8px 12px;
+            border-radius: 4px;
+            text-align: center;
+            min-width: 80px;
+            color: white;
+        }
+        
+        /* Status-specific styles */
+        .scheduled-item.status-published { border-left-color: var(--success-color); }
+        .scheduled-item.status-published .item-status { background-color: var(--success-color); }
+
+        .scheduled-item.status-pending { border-left-color: var(--warning-color); }
+        .scheduled-item.status-pending .item-status { background-color: var(--warning-color); color: black; }
+
+        .scheduled-item.status-failed,
+        .scheduled-item.status-not-found { border-left-color: var(--danger-color); }
+        .scheduled-item.status-failed .item-status,
+        .scheduled-item.status-not-found .item-status { background-color: var(--danger-color); }
+    </style>
+</head>
+<body>
+
+    <div class="app-container">
+        <header class="app-header">
+            <h1>Schedule Status</h1>
+            <div class="status-indicator">
+                <span id="login-status-dot" class="dot orange"></span>
+                <span id="login-status-text">Loading...</span>
+            </div>
+        </header>
+        <div id="schedule-list" class="schedule-list">
+            <div class="placeholder">Fetching data from server...</div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const tg = window.Telegram.WebApp;
+            tg.ready(); // Let Telegram know the web app is ready
+
+            // Adjust theme based on Telegram settings
+            const body = document.body;
+            if (tg.colorScheme === 'dark') {
+                body.style.backgroundColor = '#1e1e1e';
+                body.style.color = '#d4d4d4';
+            } else {
+                body.style.backgroundColor = '#ffffff';
+                body.style.color = '#000000';
+            }
+
+            const scheduleList = document.getElementById('schedule-list');
+            const loginStatusDot = document.getElementById('login-status-dot');
+            const loginStatusText = document.getElementById('login-status-text');
+
+            /**
+             * Fetches data from the backend API and updates the UI.
+             */
+            async function fetchData() {
+                try {
+                    // This URL should point to your worker's API endpoint.
+                    // For local testing, you might use 'http://localhost:10000/webapp/data'
+                    const response = await fetch('/webapp/data'); 
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    const data = await response.json();
+
+                    updateStatus(data.loginStatus);
+                    renderSchedule(data.schedule);
+
+                } catch (error) {
+                    console.error("Failed to fetch data:", error);
+                    scheduleList.innerHTML = '<div class="placeholder">Error: Could not connect to the server.</div>';
+                    loginStatusText.textContent = 'Connection Error';
+                    loginStatusDot.className = 'dot red';
+                }
+            }
+
+            /**
+             * Updates the login status indicator.
+             * @param {object} loginStatus - The login status object from the API.
+             */
+            function updateStatus(loginStatus) {
+                if (loginStatus.loggedIn) {
+                    loginStatusDot.className = 'dot green';
+                    loginStatusText.textContent = 'Logged In';
+                } else {
+                    loginStatusDot.className = 'dot red';
+                    loginStatusText.textContent = 'Logged Out';
+                }
+            }
+
+            /**
+             * Renders the list of scheduled items.
+             * @param {Array} items - The array of schedule items.
+             */
+            function renderSchedule(items) {
+                scheduleList.innerHTML = ''; // Clear existing content
+
+                if (!items || items.length === 0) {
+                    scheduleList.innerHTML = '<div class="placeholder">No items are currently scheduled.</div>';
+                    return;
+                }
+                
+                // Sort by date, upcoming items first
+                items.sort((a, b) => new Date(a.scheduledAtUTC) - new Date(b.scheduledAtUTC));
+
+                const upcomingItems = items.filter(item => item.status !== 'Published');
+
+                if (upcomingItems.length === 0) {
+                    scheduleList.innerHTML = '<div class="placeholder">All scheduled items have been published.</div>';
+                    return;
+                }
+
+                upcomingItems.forEach(item => {
+                    const itemDiv = document.createElement('div');
+                    const status = item.status || 'Pending';
+                    const statusClass = status.toLowerCase().replace(' ', '-');
+                    
+                    itemDiv.className = `scheduled-item status-${statusClass}`;
+                    itemDiv.id = `item-${item.id}`;
+
+                    const localDate = new Date(item.scheduledAtUTC).toLocaleString(undefined, {
+                        year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+                    });
+
+                    itemDiv.innerHTML = `
+                        <div class="item-info">
+                            <p class="item-title">${item.title}</p>
+                            <div class="item-details">
+                                <p class="item-theme">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>
+                                    Theme: ${item.theme || 'N/A'}
+                                </p>
+                                <p class="item-time">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                                    Scheduled: ${localDate}
+                                </p>
+                            </div>
+                        </div>
+                        <div class="item-actions">
+                            <div class="item-status" title="${item.failMessage || ''}">${status}</div>
+                        </div>
+                    `;
+                    scheduleList.appendChild(itemDiv);
+                });
+            }
+
+            // Initial data fetch
+            fetchData();
+        });
+    </script>
+</body>
+</html>

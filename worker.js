@@ -11,12 +11,14 @@
 
 // --- Core Node.js Modules ---
 const fs = require('fs').promises;
+const path = require('path'); // ADD THIS LINE
 
 // --- Third-Party Packages ---
 const { Pool } = require('pg');
 const { chromium } = require('playwright');
 const express = require('express');
 const bodyParser = require('body-parser');
+const cors = require('cors'); // ADD THIS LINE
 
 // --- Local Modules ---
 const telegramBot = require('./telegram_bot.js');
@@ -38,12 +40,9 @@ let activeDbIndex = 0;
 
 
 // =================================================================
-// SECTION 2: DATABASE MANAGEMENT
+// SECTION 2: DATABASE MANAGEMENT (No changes in this section)
+// ... (keep all your existing database functions)
 // =================================================================
-
-/**
- * Initializes all database pools from environment variables.
- */
 async function initializeDatabases() {
     console.log("Initializing database connections...");
     for (let i = 1; ; i++) {
@@ -73,10 +72,6 @@ async function initializeDatabases() {
     activeDbIndex = 0;
 }
 
-/**
- * (NEW) Compares the worker's active DB index with the one from the backup DB
- * and corrects it on startup if there is a mismatch.
- */
 async function reconcileActiveDbIndex() {
     if (!backupPool) {
         console.log("Skipping DB index reconciliation on startup: No backup DB configured.");
@@ -109,9 +104,6 @@ async function reconcileActiveDbIndex() {
     }
 }
 
-/**
- * Copies all application data from a source pool to a destination pool.
- */
 async function migrateData(sourcePool, destPool) {
     let sourceClient, destClient;
     try {
@@ -140,9 +132,6 @@ async function migrateData(sourcePool, destPool) {
     }
 }
 
-/**
- * The main command handler for switching the active database.
- */
 async function switchDatabase() {
     if (!backupPool || primaryPools.length < 2) {
         const message = "🔴 **DB Switch Failed:** Not enough databases are configured.";
@@ -204,9 +193,9 @@ async function switchDatabase() {
 
 
 // =================================================================
-// SECTION 3: CORE APPLICATION LOGIC
+// SECTION 3: CORE APPLICATION LOGIC (No changes in this section)
+// ... (keep all your existing application logic functions)
 // =================================================================
-
 async function loadData() {
     let client;
     try {
@@ -288,7 +277,6 @@ async function loginAndSaveSession() {
         if (browser) await browser.close();
     }
 }
-
 
 async function checkLoginStatus() {
     console.log('Performing Zedge login status check...');
@@ -672,11 +660,37 @@ function clearMissedItemsCache() {
 // =================================================================
 
 const app = express();
+// --- ADD/MODIFY THESE LINES ---
+app.use(cors()); // Enable Cross-Origin Resource Sharing
 app.use(bodyParser.json());
+// Serve static files from a 'public' directory
+// This is where you will place telegram_webapp.html
+app.use(express.static(path.join(__dirname, 'public')));
+// --- END OF ADDITIONS ---
+
 
 app.get('/', (req, res) => {
     res.status(200).send(`Zedge Publisher worker is alive and running. Active DB: PRIMARY_DB_${activeDbIndex + 1}`);
 });
+
+// --- NEW API ENDPOINT FOR THE TELEGRAM WEB APP ---
+app.get('/webapp/data', async (req, res) => {
+    console.log('Received data request from Web App.');
+    try {
+        const appData = await loadData();
+        const loginStatus = await checkLoginStatus();
+        
+        res.json({
+            schedule: appData.schedule || [],
+            loginStatus: loginStatus
+        });
+    } catch (error) {
+        console.error('Error fetching data for web app:', error);
+        res.status(500).json({ error: 'Failed to retrieve data from the server.' });
+    }
+});
+// --- END OF NEW ENDPOINT ---
+
 
 const PORT = process.env.PORT || 10000;
 
@@ -690,6 +704,7 @@ async function startApp() {
 
         app.listen(PORT, () => {
             console.log(`Server listening on port ${PORT}`);
+            console.log(`Telegram Web App should be accessible at http://localhost:${PORT}/telegram_webapp.html`);
 
             telegramBot.startBot(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, {
                 loadDataFunc: loadData,

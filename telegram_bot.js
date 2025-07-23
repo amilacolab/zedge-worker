@@ -33,11 +33,29 @@ function startBot(token, chatId, dependencies) {
 
     // --- Command Handlers ---
 
+    // --- NEW: Set Bot Commands for easy access in Telegram UI ---
+    bot.setMyCommands([
+        { command: '/app', description: 'Open the status web app' },
+        { command: '/schedule', description: 'View upcoming schedule' },
+        { command: 'loginstatus', description: 'Check Zedge login status' },
+        { command: '/status', description: 'Find an item by title' },
+        { command: '/help', description: 'Show all available commands' }
+    ]);
+    // --- END OF NEW SECTION ---
+
+
     bot.on('message', (msg) => {
         const text = msg.text;
         const chatId = msg.chat.id;
 
         if (!text) return;
+        
+        // --- NEW: Command for launching the Web App ---
+        if (text.startsWith('/app')) {
+            handleWebAppCommand(chatId);
+            return; // Stop processing after this command
+        }
+        // --- END OF NEW SECTION ---
 
         // Using an if/else if structure for clarity
         if (text.startsWith('/help') || text.startsWith('/start')) {
@@ -87,9 +105,31 @@ function sendNotification(message) {
 
 // --- Command Logic Functions ---
 
+// --- NEW: Handler for the /app command ---
+function handleWebAppCommand(chatId) {
+    // IMPORTANT: Replace this URL with the public URL of your server
+    const webAppUrl = process.env.WEB_APP_URL || 'https://your-render-app-name.onrender.com/telegram_webapp.html';
+
+    if (webAppUrl.includes('your-render-app-name')) {
+         bot.sendMessage(chatId, "Web App URL is not configured on the server. Please set the `WEB_APP_URL` environment variable.");
+         return;
+    }
+
+    const opts = {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '📊 Open Status App', web_app: { url: webAppUrl } }]
+            ]
+        }
+    };
+    bot.sendMessage(chatId, 'Click the button below to open the web app and view the live schedule and status.', opts);
+}
+// --- END OF NEW FUNCTION ---
+
 function handleHelpCommand(chatId) {
     const helpMessage = [
         "**Zedge Worker Bot Commands:**",
+        "`/app` - Opens a web app with the live schedule.", // MODIFIED
         "`/help` or `/start` - Shows this help message.",
         "`/schedule` - Lists upcoming, unpublished items.",
         "`/status <title>` - Searches for an item by title.",
