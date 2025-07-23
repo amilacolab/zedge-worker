@@ -156,7 +156,11 @@ async function loadData() {
     try {
         client = await activePool.connect();
         const result = await client.query('SELECT data FROM app_data WHERE id = 1');
-        return result.rows.length > 0 && result.rows[0].data ? result.rows[0].data : { settings: {}, activeResults: {}, recycleBin: [], schedule: [], recentlyPublished: [], db_config: { active_index: 0 } };
+        const data = result.rows.length > 0 && result.rows[0].data ? result.rows[0].data : { settings: {}, activeResults: {}, recycleBin: [], schedule: [], recentlyPublished: [], db_config: { active_index: 0 } };
+        if (!Array.isArray(data.recentlyPublished)) {
+            data.recentlyPublished = [];
+        }
+        return data;
     } catch (err) {
         console.error('Error loading data from database', err);
         return { settings: {}, activeResults: {}, recycleBin: [], schedule: [], recentlyPublished: [], db_config: { active_index: 0 } };
@@ -280,11 +284,78 @@ async function rescheduleMissedItem(identifier, timeString) {
 
 // --- Core Worker Loop ---
 async function checkScheduleForPublishing() {
-    if (isWorkerPaused) return;
+    if (isWorkerPaused) {
+        console.log("Worker is paused. Skipping schedule check.");
+        return;
+    }
+
     lastCheckTime = new Date().toISOString(); 
-    const localTime = new Date(lastCheckTime).toLocaleTimeString();
-    console.log(`--- Running background check [${localTime}] [DB: ${activeDbIndex + 1}] ---`);
-    // ... rest of the logic is the same
+    const now = new Date();
+    console.log(`--- Running background check [${now.toLocaleTimeString()}] [DB: ${activeDbIndex + 1}] ---`);
+    
+    const data = await loadData();
+    const schedule = data.schedule || [];
+    
+    if (schedule.length === 0) {
+        console.log("[Schedule is empty] No items to check.");
+        return;
+    }
+
+    const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+    const newlyMissedItems = [];
+
+    for (const item of schedule) {
+        if (!item.scheduledAtUTC) continue;
+        
+        const isPending = !item.status || item.status === 'Pending';
+        if (!isPending) continue;
+
+        const scheduleDateTime = new Date(item.scheduledAtUTC);
+        if (scheduleDateTime > now) continue; // Skip future items
+
+        if (scheduleDateTime < fiveMinutesAgo) {
+            if (!missedItemsCache.find(cached => cached.id === item.id) && !publishingInProgress.has(item.id)) {
+                newlyMissedItems.push(item);
+            }
+        } else {
+            if (!publishingInProgress.has(item.id)) {
+                console.log(`✅ FOUND DUE ITEM: "${item.title}". Adding to queue.`);
+                publishingInProgress.add(item.id);
+                publishingQueue.push(item);
+            }
+        }
+    }
+
+    if (newlyMissedItems.length > 0) {
+        missedItemsCache.push(...newlyMissedItems);
+    }
+
+    if (!isQueueProcessing && publishingQueue.length > 0) {
+        processPublishingQueue();
+    }
+
+    if (missedItemsCache.length > 0 && !missedItemsNotificationSent) {
+        const itemTitles = missedItemsCache.map(item => `- \`${item.title}\``).join('\n');
+        const notificationMessage = `🔴 **Missed Publications Detected!**\n\nThe following items were not published at their scheduled time:\n${itemTitles}\n\n**Use a command to proceed:**\n\`/publish all-missed\` - Publishes all items now.\n\`/publish <title>\` - Publishes a specific item.\n\n*To reschedule, use the \`/rs\` command. You can then use \`/clearmissed\` to remove this message.*`;
+        sendNotification(notificationMessage);
+        missedItemsNotificationSent = true;
+    }
+}
+
+async function processPublishingQueue() {
+    if (isQueueProcessing || publishingQueue.length === 0) return;
+    isQueueProcessing = true;
+    while (publishingQueue.length > 0) {
+        const itemToPublish = publishingQueue.shift();
+        try {
+            await executePublishWorkflow(itemToPublish);
+        } catch (error) {
+            console.error(`A critical error occurred for item "${itemToPublish.title}"`, error);
+        } finally {
+            publishingInProgress.delete(itemToPublish.id);
+        }
+    }
+    isQueueProcessing = false;
 }
 
 async function executePublishWorkflow(scheduledItem) {
@@ -293,10 +364,13 @@ async function executePublishWorkflow(scheduledItem) {
     const itemIndex = appData.schedule.findIndex(i => i.id === scheduledItem.id);
 
     if (itemIndex > -1) {
-        const itemToProcess = appData.schedule[itemIndex];
+        const itemToProcess = JSON.parse(JSON.stringify(appData.schedule[itemIndex]));
+        
         if (result.status === 'success') {
             appData.schedule.splice(itemIndex, 1);
-            if (!appData.recentlyPublished) appData.recentlyPublished = [];
+            if (!Array.isArray(appData.recentlyPublished)) {
+                appData.recentlyPublished = [];
+            }
             itemToProcess.status = 'Published';
             itemToProcess.publishedAtUTC = new Date().toISOString();
             appData.recentlyPublished.unshift(itemToProcess);
@@ -311,9 +385,8 @@ async function executePublishWorkflow(scheduledItem) {
     }
 }
 
-async function performPublish(item) { /* Unchanged */ return { status: 'success' }; }
-function clearMissedItemsCache() { /* Unchanged */ missedItemsCache = []; missedItemsNotificationSent = false; return {success: true, message: "Missed items cache cleared."};}
-function processPublishingQueue() { /* Unchanged */ }
+async function performPublish(item) { /* Unchanged placeholder */ return { status: 'success' }; }
+function clearMissedItemsCache() { missedItemsCache = []; missedItemsNotificationSent = false; return {success: true, message: "Missed items cache cleared."};}
 function getMissedItems() { return missedItemsCache; }
 
 // =================================================================
@@ -339,7 +412,7 @@ app.get('/webapp/v2/data', async (req, res) => {
                 loggedIn: loginStatus.loggedIn,
                 activeDb: `DB ${activeDbIndex + 1}`,
                 queueCount: publishingQueue.length,
-                lastCheckTime: lastCheckTime, // Will be an ISO string
+                lastCheckTime: lastCheckTime,
                 isWorkerPaused: isWorkerPaused
             }
         });

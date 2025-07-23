@@ -577,6 +577,19 @@
                         if (!itemDateKey) return false;
                         return getYYYYMMDD(new Date(itemDateKey)) === state.selectedDate;
                     });
+
+                    // --- FIX: SORTING LOGIC ADDED HERE ---
+                    const statusOrder = { 'Pending': 1, 'Failed': 2, 'Not Found': 3, 'Published': 4 };
+                    displayData.sort((a, b) => {
+                        const statusA = a.status || 'Pending';
+                        const statusB = b.status || 'Pending';
+                        const orderA = statusOrder[statusA] || 5;
+                        const orderB = statusOrder[statusB] || 5;
+                        if (orderA !== orderB) {
+                            return orderA - orderB;
+                        }
+                        return new Date(a.scheduledAtUTC) - new Date(b.scheduledAtUTC);
+                    });
                 }
 
                 if (displayData.length === 0) {
