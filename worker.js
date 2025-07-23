@@ -27,7 +27,7 @@ let missedItemsCache = [];
 let missedItemsNotificationSent = false;
 let isWorkerPaused = false;
 let mainIntervalId = null;
-let lastCheckTime = null;
+let lastCheckTime = null; // Will store as ISO string
 
 // Database state
 let primaryPools = [];
@@ -243,7 +243,6 @@ async function rescheduleItemsByIds(itemIds, timeString = '10m') {
 }
 
 // --- Bot Command Functions (Legacy logic for bot) ---
-// ADDED BACK: These functions are specifically for the Telegram bot commands
 function publishMissedItems(identifier) {
     const itemsToPublish = [];
     if (identifier === 'all-missed') {
@@ -273,7 +272,6 @@ async function rescheduleMissedItem(identifier, timeString) {
     
     const result = await rescheduleItemsByIds([item.id], timeString);
     if (result.success) {
-        // Remove from cache after successful reschedule
         missedItemsCache = missedItemsCache.filter(i => i.id !== item.id);
         if (missedItemsCache.length === 0) missedItemsNotificationSent = false;
     }
@@ -283,8 +281,9 @@ async function rescheduleMissedItem(identifier, timeString) {
 // --- Core Worker Loop ---
 async function checkScheduleForPublishing() {
     if (isWorkerPaused) return;
-    lastCheckTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    console.log(`--- Running background check [${lastCheckTime}] [DB: ${activeDbIndex + 1}] ---`);
+    lastCheckTime = new Date().toISOString(); 
+    const localTime = new Date(lastCheckTime).toLocaleTimeString();
+    console.log(`--- Running background check [${localTime}] [DB: ${activeDbIndex + 1}] ---`);
     // ... rest of the logic is the same
 }
 
@@ -340,7 +339,7 @@ app.get('/webapp/v2/data', async (req, res) => {
                 loggedIn: loginStatus.loggedIn,
                 activeDb: `DB ${activeDbIndex + 1}`,
                 queueCount: publishingQueue.length,
-                lastCheckTime: lastCheckTime,
+                lastCheckTime: lastCheckTime, // Will be an ISO string
                 isWorkerPaused: isWorkerPaused
             }
         });
@@ -389,13 +388,12 @@ async function startApp() {
         app.listen(PORT, () => {
             console.log(`Server v2 listening on port ${PORT}`);
             
-            // CORRECTED: Pass the correct functions to the bot
             telegramBot.startBot(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, {
                 loadDataFunc: loadData,
                 loginCheckFunc: checkLoginStatus,
                 getMissedItemsFunc: getMissedItems,
-                publishMissedItemsFunc: publishMissedItems, // Use the legacy function for the bot
-                rescheduleMissedItemFunc: rescheduleMissedItem, // Use the legacy function for the bot
+                publishMissedItemsFunc: publishMissedItems,
+                rescheduleMissedItemFunc: rescheduleMissedItem,
                 clearMissedCacheFunc: clearMissedItemsCache,
                 switchDatabaseFunc: switchDatabase
             });
@@ -410,7 +408,7 @@ async function startApp() {
 
 function startWorkerIntervals() {
     console.log('Zedge Worker started. Initializing background tasks...');
-    setTimeout(checkScheduleForPublishing, 5 * 1000); // Run first check quickly
+    setTimeout(checkScheduleForPublishing, 5 * 1000);
     mainIntervalId = setInterval(checkScheduleForPublishing, 60 * 1000);
 }
 

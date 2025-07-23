@@ -46,7 +46,6 @@
             transition: padding-bottom 0.3s ease-in-out;
         }
         
-        /* CORRECTED: Added class for padding adjustment */
         .app-container.select-mode-active {
             padding-bottom: calc(var(--bottom-nav-height) + var(--action-bar-height));
         }
@@ -80,6 +79,7 @@
             width: 10px;
             height: 10px;
             border-radius: 50%;
+            flex-shrink: 0;
         }
         .dot.green { background-color: var(--success-color); }
         .dot.red { background-color: var(--danger-color); }
@@ -196,10 +196,10 @@
             height: 20px;
             accent-color: var(--accent-color);
         }
-        .item-content { flex-grow: 1; }
-        .item-title { font-weight: 600; margin-bottom: 8px; }
+        .item-content { flex-grow: 1; min-width: 0; }
+        .item-title { font-weight: 600; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .item-details { font-size: 0.8em; color: var(--text-secondary-color); }
-        .item-actions { display: flex; gap: 8px; }
+        .item-actions { display: flex; gap: 8px; flex-shrink: 0; }
         .action-btn {
             background-color: var(--secondary-color);
             border: 1px solid var(--border-color);
@@ -340,7 +340,7 @@
         <!-- Live Worker Status Card -->
         <div class="status-card" id="status-card">
             <div class="status-grid">
-                <div class="status-item"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 1a4.5 4.5 0 00-4.5 4.5V9H5a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2v-6a2 2 0 00-2-2h-.5V5.5A4.5 4.5 0 0010 1zm3 8V5.5a3 3 0 10-6 0V9h6z" clip-rule="evenodd" /></svg> <span id="login-status-text">Loading...</span></div>
+                <div class="status-item" id="login-status-item">Loading...</div>
                 <div class="status-item"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M7 3a1 1 0 000 2h6a1 1 0 100-2H7zM4 7a1 1 0 011-1h10a1 1 0 110 2H5a1 1 0 01-1-1zM2 11a2 2 0 012-2h12a2 2 0 012 2v4a2 2 0 01-2 2H4a2 2 0 01-2-2v-4z" /></svg> <span id="db-status-text">DB: Loading...</span></div>
                 <div class="status-item"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M2 4.75A.75.75 0 012.75 4h14.5a.75.75 0 010 1.5H2.75A.75.75 0 012 4.75zM2 10a.75.75 0 01.75-.75h14.5a.75.75 0 010 1.5H2.75A.75.75 0 012 10zm0 5.25a.75.75 0 01.75-.75h14.5a.75.75 0 010 1.5H2.75a.75.75 0 01-.75-.75z" clip-rule="evenodd" /></svg> <span id="queue-status-text">Queue: 0</span></div>
                 <div class="status-item"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-13a.75.75 0 00-1.5 0v5c0 .414.336.75.75.75h4a.75.75 0 000-1.5h-3.25V5z" clip-rule="evenodd" /></svg> <span id="last-check-text">Checked: --:--</span></div>
@@ -405,25 +405,19 @@
             tg.ready();
             tg.expand();
             
-            // --- STATE MANAGEMENT ---
             const state = {
-                currentView: 'schedule', // 'schedule' or 'control'
-                scheduleView: 'upcoming', // 'upcoming' or 'history'
+                currentView: 'schedule',
+                scheduleView: 'upcoming',
                 selectedDate: getYYYYMMDD(new Date()),
                 selectMode: false,
                 selectedItems: new Set(),
-                allData: {
-                    schedule: [],
-                    history: [],
-                    status: {}
-                }
+                allData: { schedule: [], history: [], status: {} }
             };
 
-            // --- DOM ELEMENTS ---
             const elements = {
                 appContainer: document.getElementById('app-container'),
                 status: {
-                    login: document.getElementById('login-status-text'),
+                    login: document.getElementById('login-status-item'),
                     db: document.getElementById('db-status-text'),
                     queue: document.getElementById('queue-status-text'),
                     lastCheck: document.getElementById('last-check-text'),
@@ -443,7 +437,6 @@
                 workerToggleBtn: document.getElementById('worker-toggle-btn'),
             };
 
-            // --- UTILITY FUNCTIONS ---
             function getYYYYMMDD(date) {
                 const year = date.getFullYear();
                 const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -453,11 +446,7 @@
 
             function triggerHaptic(style = 'light') {
                 if (tg.HapticFeedback && tg.HapticFeedback.impactOccurred) {
-                    try {
-                        tg.HapticFeedback.impactOccurred(style);
-                    } catch (e) {
-                        // Ignore haptic errors, common in desktop testing
-                    }
+                    try { tg.HapticFeedback.impactOccurred(style); } catch (e) {}
                 }
             }
             
@@ -466,18 +455,13 @@
                 toast.className = `toast-notification toast-${type}`;
                 toast.textContent = message;
                 document.body.appendChild(toast);
-                
-                setTimeout(() => {
-                    toast.classList.add('show');
-                }, 10);
-
+                setTimeout(() => { toast.classList.add('show'); }, 10);
                 setTimeout(() => {
                     toast.classList.remove('show');
                     toast.addEventListener('transitionend', () => toast.remove());
                 }, 3000);
             }
 
-            // --- API COMMUNICATION ---
             async function postAction(action, payload = {}) {
                 triggerHaptic('medium');
                 try {
@@ -489,7 +473,7 @@
                     const result = await response.json();
                     if (!response.ok) throw new Error(result.message || 'Action failed');
                     showToast(result.message || 'Action successful!');
-                    fetchData(); // Refresh data after action
+                    fetchData();
                     return true;
                 } catch (error) {
                     console.error(`Action ${action} failed:`, error);
@@ -499,7 +483,7 @@
             }
 
             async function fetchData() {
-                if (document.querySelectorAll('.skeleton').length === 0) {
+                if (!document.querySelector('.skeleton-item')) {
                     renderSkeleton();
                 }
                 try {
@@ -513,7 +497,6 @@
                 }
             }
 
-            // --- RENDERING ---
             function renderAll() {
                 renderStatusCard();
                 renderMiniCalendar();
@@ -534,7 +517,12 @@
                 elements.status.login.innerHTML = `<div class="dot ${status.loggedIn ? 'green' : 'red'}"></div> <span class="status-value">${status.loggedIn ? 'Logged In' : 'Logged Out'}</span>`;
                 elements.status.db.textContent = `DB: ${status.activeDb || 'N/A'}`;
                 elements.status.queue.textContent = `Queue: ${status.queueCount || 0}`;
-                elements.status.lastCheck.textContent = `Checked: ${status.lastCheckTime || '--:--'}`;
+                if (status.lastCheckTime) {
+                    const localCheckTime = new Date(status.lastCheckTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    elements.status.lastCheck.textContent = `Checked: ${localCheckTime}`;
+                } else {
+                    elements.status.lastCheck.textContent = `Checked: --:--`;
+                }
             }
             
             function renderWorkerControlButton() {
@@ -572,26 +560,31 @@
             function renderScheduleList() {
                 const container = elements.scheduleListContainer;
                 container.innerHTML = '';
-                const dataSet = state.scheduleView === 'upcoming' ? state.allData.schedule : state.allData.history;
+                const isHistory = state.scheduleView === 'history';
+                let dataSet = isHistory ? state.allData.history : state.allData.schedule;
                 
-                if (!dataSet) {
+                if (!dataSet || dataSet.length === 0) {
                     container.innerHTML = `<p style="text-align:center; color: var(--text-secondary-color); padding-top: 40px;">No items to show.</p>`;
                     return;
                 }
 
-                const filteredData = dataSet.filter(item => {
-                    const itemDateKey = item.publishedAtUTC || item.scheduledAtUTC;
-                    if (!itemDateKey) return false;
-                    const itemDate = new Date(itemDateKey);
-                    return getYYYYMMDD(itemDate) === state.selectedDate;
-                });
+                let displayData;
+                if (isHistory) {
+                    displayData = dataSet;
+                } else {
+                    displayData = dataSet.filter(item => {
+                        const itemDateKey = item.scheduledAtUTC;
+                        if (!itemDateKey) return false;
+                        return getYYYYMMDD(new Date(itemDateKey)) === state.selectedDate;
+                    });
+                }
 
-                if (filteredData.length === 0) {
+                if (displayData.length === 0) {
                     container.innerHTML = `<p style="text-align:center; color: var(--text-secondary-color); padding-top: 40px;">No items for this day.</p>`;
                     return;
                 }
 
-                filteredData.forEach(item => {
+                displayData.forEach(item => {
                     const itemDiv = document.createElement('div');
                     const status = item.status || 'Pending';
                     itemDiv.className = `scheduled-item status-${status.toLowerCase().replace(/ /g, '-')}`;
@@ -601,10 +594,10 @@
                     itemDiv.dataset.itemId = item.id;
 
                     const dateKey = item.publishedAtUTC || item.scheduledAtUTC;
-                    const localDate = new Date(dateKey).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+                    const localDate = new Date(dateKey).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
                     
                     let actionButtonsHTML = '';
-                    if (state.scheduleView === 'upcoming') {
+                    if (!isHistory) {
                         if (status === 'Pending' || status === 'Failed') {
                             actionButtonsHTML += `<button class="action-btn publish" data-action="publish-now">Publish</button>`;
                         }
@@ -636,17 +629,13 @@
                 }
             }
 
-            // --- EVENT HANDLERS ---
             function handleNavClick(e) {
                 const btn = e.currentTarget;
                 if (btn.dataset.view === state.currentView) return;
-                
                 triggerHaptic();
                 state.currentView = btn.dataset.view;
-
                 elements.navBtns.forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
-
                 Object.values(elements.views).forEach(v => v.classList.remove('active'));
                 elements.views[state.currentView].classList.add('active');
             }
@@ -654,26 +643,21 @@
             function handleCalendarClick(e) {
                 const dayDiv = e.currentTarget;
                 if (dayDiv.dataset.date === state.selectedDate) return;
-
                 triggerHaptic();
                 state.selectedDate = dayDiv.dataset.date;
-                
                 elements.miniCalendar.querySelector('.active')?.classList.remove('active');
                 dayDiv.classList.add('active');
-                
                 renderScheduleList();
             }
             
             function handleViewToggle(e) {
                 const btn = e.currentTarget;
                 if (btn.dataset.view === state.scheduleView) return;
-                
                 triggerHaptic();
                 state.scheduleView = btn.dataset.view;
-                
                 elements.viewToggleBtns.forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
-                
+                elements.miniCalendar.style.display = state.scheduleView === 'upcoming' ? 'flex' : 'none';
                 renderScheduleList();
             }
             
@@ -682,7 +666,6 @@
                 state.selectMode = !state.selectMode;
                 elements.selectModeBtn.textContent = state.selectMode ? 'Cancel' : 'Select';
                 elements.appContainer.classList.toggle('select-mode-active', state.selectMode);
-
                 if (!state.selectMode) {
                     state.selectedItems.clear();
                     updateBatchActionBar();
@@ -693,11 +676,9 @@
             function handleItemClick(e) {
                 const itemDiv = e.target.closest('.scheduled-item');
                 if (!itemDiv || !state.selectMode) return;
-                
                 triggerHaptic('light');
                 const itemId = itemDiv.dataset.itemId;
                 const checkbox = itemDiv.querySelector('.item-checkbox');
-
                 if (state.selectedItems.has(itemId)) {
                     state.selectedItems.delete(itemId);
                     checkbox.checked = false;
@@ -713,11 +694,9 @@
             function handleActionClick(e) {
                 const btn = e.target.closest('.action-btn');
                 if (!btn) return;
-
-                e.stopPropagation(); // Prevent item click in select mode
+                e.stopPropagation();
                 const action = btn.dataset.action;
                 const itemId = btn.closest('.scheduled-item').dataset.itemId;
-
                 if (action === 'publish-now') {
                     postAction('publish-now', { itemIds: [itemId] });
                 } else if (action === 'reschedule') {
@@ -729,20 +708,17 @@
                 const btn = e.currentTarget;
                 const action = btn.dataset.action;
                 const itemIds = Array.from(state.selectedItems);
-                
                 if (action === 'batch-publish') {
                     postAction('publish-now', { itemIds });
                 } else if (action === 'batch-reschedule') {
                     postAction('reschedule', { itemIds, time: '10m' });
                 }
-                
                 handleSelectModeToggle();
             }
             
             function handleControlPanelClick(e) {
                 const btn = e.target.closest('.control-btn');
                 if (!btn) return;
-                
                 const action = btn.dataset.action;
                 if (action === 'toggle-worker') {
                     const workerAction = state.allData.status.isWorkerPaused ? 'resume-worker' : 'pause-worker';
@@ -756,7 +732,6 @@
                 }
             }
 
-            // --- INITIALIZATION ---
             elements.navBtns.forEach(btn => btn.addEventListener('click', handleNavClick));
             elements.viewToggleBtns.forEach(btn => btn.addEventListener('click', handleViewToggle));
             elements.selectModeBtn.addEventListener('click', handleSelectModeToggle);
