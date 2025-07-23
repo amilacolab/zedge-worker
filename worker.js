@@ -36,7 +36,7 @@ let activePool;
 let activeDbIndex = 0;
 
 // =================================================================
-// SECTION 2: DATABASE MANAGEMENT (No changes from previous version)
+// SECTION 2: DATABASE MANAGEMENT (No changes)
 // =================================================================
 async function initializeDatabases() {
     console.log("Initializing database connections...");
@@ -179,16 +179,10 @@ async function saveData(appData) {
     }
 }
 
-async function checkLoginStatus() {
-    // This function remains unchanged
-    return { loggedIn: true }; // Placeholder for actual logic
-}
+async function checkLoginStatus() { /* Unchanged */ return { loggedIn: true }; }
+function sendNotification(message) { telegramBot.sendNotification(message); }
 
-function sendNotification(message) {
-    telegramBot.sendNotification(message);
-}
-
-// --- NEW/MODIFIED WORKER CONTROL FUNCTIONS ---
+// --- Worker Control Functions ---
 function pauseWorker() {
     if (mainIntervalId) {
         clearInterval(mainIntervalId);
@@ -210,22 +204,17 @@ function resumeWorker() {
     return { success: false, message: "Worker is already running." };
 }
 
-async function publishNow(itemIds) {
+// --- Action Functions (for Web App API) ---
+async function publishNowByIds(itemIds) {
     const appData = await loadData();
     const itemsToPublish = appData.schedule.filter(item => itemIds.includes(item.id));
-    
-    if (itemsToPublish.length === 0) {
-        return { success: false, message: "No valid items found to publish." };
-    }
-
+    if (itemsToPublish.length === 0) return { success: false, message: "No valid items found to publish." };
     publishingQueue.push(...itemsToPublish);
-    if (!isQueueProcessing) {
-        processPublishingQueue();
-    }
+    if (!isQueueProcessing) processPublishingQueue();
     return { success: true, message: `Queued ${itemsToPublish.length} item(s) for immediate publishing.` };
 }
 
-async function rescheduleItems(itemIds, timeString = '10m') {
+async function rescheduleItemsByIds(itemIds, timeString = '10m') {
     const appData = await loadData();
     const now = new Date();
     const value = parseInt(timeString.slice(0, -1), 10);
@@ -253,6 +242,45 @@ async function rescheduleItems(itemIds, timeString = '10m') {
     return { success: false, message: "No items were found to reschedule." };
 }
 
+// --- Bot Command Functions (Legacy logic for bot) ---
+// ADDED BACK: These functions are specifically for the Telegram bot commands
+function publishMissedItems(identifier) {
+    const itemsToPublish = [];
+    if (identifier === 'all-missed') {
+        itemsToPublish.push(...missedItemsCache);
+        missedItemsCache = [];
+    } else {
+        const itemIndex = missedItemsCache.findIndex(item => item.title.toLowerCase() === identifier.toLowerCase());
+        if (itemIndex > -1) {
+            itemsToPublish.push(missedItemsCache[itemIndex]);
+            missedItemsCache.splice(itemIndex, 1);
+        } else {
+            return { success: false, message: `Could not find "${identifier}" in the missed items list.` };
+        }
+    }
+
+    if (itemsToPublish.length > 0) {
+        publishingQueue.push(...itemsToPublish);
+        if (!isQueueProcessing) processPublishingQueue();
+        return { success: true, message: `Queued ${itemsToPublish.length} item(s) for publishing.` };
+    }
+    return { success: false, message: 'No items to publish.' };
+}
+
+async function rescheduleMissedItem(identifier, timeString) {
+    const item = missedItemsCache.find(i => i.title.toLowerCase() === identifier.toLowerCase());
+    if (!item) return { success: false, message: `Could not find "${identifier}" in the missed items list.` };
+    
+    const result = await rescheduleItemsByIds([item.id], timeString);
+    if (result.success) {
+        // Remove from cache after successful reschedule
+        missedItemsCache = missedItemsCache.filter(i => i.id !== item.id);
+        if (missedItemsCache.length === 0) missedItemsNotificationSent = false;
+    }
+    return result;
+}
+
+// --- Core Worker Loop ---
 async function checkScheduleForPublishing() {
     if (isWorkerPaused) return;
     lastCheckTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -261,7 +289,7 @@ async function checkScheduleForPublishing() {
 }
 
 async function executePublishWorkflow(scheduledItem) {
-    const result = await performPublish(scheduledItem); // performPublish remains unchanged
+    const result = await performPublish(scheduledItem); 
     const appData = await loadData();
     const itemIndex = appData.schedule.findIndex(i => i.id === scheduledItem.id);
 
@@ -287,6 +315,7 @@ async function executePublishWorkflow(scheduledItem) {
 async function performPublish(item) { /* Unchanged */ return { status: 'success' }; }
 function clearMissedItemsCache() { /* Unchanged */ missedItemsCache = []; missedItemsNotificationSent = false; return {success: true, message: "Missed items cache cleared."};}
 function processPublishingQueue() { /* Unchanged */ }
+function getMissedItems() { return missedItemsCache; }
 
 // =================================================================
 // SECTION 4: EXPRESS WEB SERVER & APP STARTUP
@@ -298,7 +327,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/', (req, res) => res.status(200).send(`Zedge Worker v2 is alive. DB: ${activeDbIndex + 1}`));
 
-// --- NEW v2 API ENDPOINTS ---
+// --- v2 API ENDPOINTS ---
 app.get('/webapp/v2/data', async (req, res) => {
     try {
         const appData = await loadData();
@@ -327,10 +356,10 @@ app.post('/webapp/v2/action', async (req, res) => {
 
     switch (action) {
         case 'publish-now':
-            result = await publishNow(itemIds);
+            result = await publishNowByIds(itemIds);
             break;
         case 'reschedule':
-            result = await rescheduleItems(itemIds, time);
+            result = await rescheduleItemsByIds(itemIds, time);
             break;
         case 'pause-worker':
             result = pauseWorker();
@@ -359,7 +388,18 @@ async function startApp() {
         
         app.listen(PORT, () => {
             console.log(`Server v2 listening on port ${PORT}`);
-            telegramBot.startBot(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, {});
+            
+            // CORRECTED: Pass the correct functions to the bot
+            telegramBot.startBot(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, {
+                loadDataFunc: loadData,
+                loginCheckFunc: checkLoginStatus,
+                getMissedItemsFunc: getMissedItems,
+                publishMissedItemsFunc: publishMissedItems, // Use the legacy function for the bot
+                rescheduleMissedItemFunc: rescheduleMissedItem, // Use the legacy function for the bot
+                clearMissedCacheFunc: clearMissedItemsCache,
+                switchDatabaseFunc: switchDatabase
+            });
+
             startWorkerIntervals();
         });
     } catch (error) {
