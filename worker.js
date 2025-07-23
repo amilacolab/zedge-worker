@@ -303,6 +303,7 @@ async function checkScheduleForPublishing() {
 
     const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
     const newlyMissedItems = [];
+    let dataWasChanged = false; // Flag to check if we need to save
 
     for (const item of schedule) {
         if (!item.scheduledAtUTC) continue;
@@ -316,6 +317,10 @@ async function checkScheduleForPublishing() {
         if (scheduleDateTime < fiveMinutesAgo) {
             if (!missedItemsCache.find(cached => cached.id === item.id) && !publishingInProgress.has(item.id)) {
                 newlyMissedItems.push(item);
+                // --- FIX: Update the status in the main schedule array ---
+                item.status = "Failed";
+                item.failMessage = "Publication was missed at the scheduled time.";
+                dataWasChanged = true;
             }
         } else {
             if (!publishingInProgress.has(item.id)) {
@@ -324,6 +329,11 @@ async function checkScheduleForPublishing() {
                 publishingQueue.push(item);
             }
         }
+    }
+
+    // --- FIX: Save data if any items were marked as missed ---
+    if (dataWasChanged) {
+        await saveData(data);
     }
 
     if (newlyMissedItems.length > 0) {
