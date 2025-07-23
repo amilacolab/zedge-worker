@@ -2,23 +2,26 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zedge Publisher Status</title>
-    <!-- Telegram Web App Script -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Zedge Command Center</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
-        /* CSS styles adapted from your provided files for a consistent theme */
         :root {
-            --bg-color: #1e1e1e;
-            --primary-color: #2a2a2a;
-            --secondary-color: #333333;
-            --text-color: #d4d4d4;
+            --bg-color: #121212;
+            --primary-color: #1e1e1e;
+            --secondary-color: #2a2a2a;
+            --text-color: #e0e0e0;
+            --text-secondary-color: #b0b0b0;
             --accent-color: #007acc;
-            --border-color: #444444;
+            --accent-hover: #0095f6;
+            --border-color: #333333;
             --success-color: #4CAF50;
             --danger-color: #f44336;
             --warning-color: #ff9800;
-            --font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            --border-radius: 12px;
+            --bottom-nav-height: 65px;
+            --action-bar-height: 70px;
         }
 
         body, html {
@@ -26,271 +29,745 @@
             padding: 0;
             height: 100%;
             width: 100%;
-            overflow-x: hidden;
+            overflow: hidden;
             font-family: var(--font-family);
             background-color: var(--bg-color);
             color: var(--text-color);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
 
         .app-container {
             display: flex;
             flex-direction: column;
             height: 100vh;
-            padding: 10px;
+            padding: 15px 15px var(--bottom-nav-height) 15px;
             box-sizing: border-box;
+            transition: padding-bottom 0.3s ease-in-out;
+        }
+        
+        /* CORRECTED: Added class for padding adjustment */
+        .app-container.select-mode-active {
+            padding-bottom: calc(var(--bottom-nav-height) + var(--action-bar-height));
         }
 
-        .app-header {
+        /* --- Status Card --- */
+        .status-card {
+            background: var(--primary-color);
+            border-radius: var(--border-radius);
             padding: 15px;
-            background-color: var(--primary-color);
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-shrink: 0;
-            gap: 20px;
-            border-radius: 8px 8px 0 0;
+            margin-bottom: 15px;
+            border: 1px solid var(--border-color);
         }
-
-        .app-header h1 {
-            margin: 0;
-            font-size: 1.2em;
-            color: var(--accent-color);
+        .status-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
         }
-
-        .status-indicator {
+        .status-item {
             display: flex;
             align-items: center;
             gap: 8px;
             font-size: 0.9em;
         }
-
-        .dot {
-            width: 12px;
-            height: 12px;
+        .status-item svg {
+            width: 16px;
+            height: 16px;
+            flex-shrink: 0;
+            opacity: 0.7;
+        }
+        .status-item .dot {
+            width: 10px;
+            height: 10px;
             border-radius: 50%;
-            transition: background-color 0.3s ease;
         }
-
-        .dot.red { background-color: var(--danger-color); }
         .dot.green { background-color: var(--success-color); }
+        .dot.red { background-color: var(--danger-color); }
         .dot.orange { background-color: var(--warning-color); }
+        .status-value { font-weight: 600; }
 
-        .schedule-list {
+        /* --- Main Content --- */
+        .main-content {
             flex-grow: 1;
-            overflow-y: auto;
-            padding: 10px 0;
-            background-color: var(--primary-color);
-            border-radius: 0 0 8px 8px;
+            overflow: hidden;
+            display: none;
         }
-
-        .placeholder {
-            padding: 40px 20px;
-            text-align: center;
-            color: #888;
-            font-size: 1.1em;
-        }
-
-        .scheduled-item {
-            background-color: var(--secondary-color);
-            border: 1px solid var(--border-color);
-            border-left-width: 4px;
-            border-radius: 6px;
-            padding: 15px;
-            margin: 0 10px 10px;
-            display: grid;
-            grid-template-columns: 1fr auto;
-            gap: 15px;
-            align-items: center;
-            transition: box-shadow 0.3s ease, border-color 0.3s ease;
-        }
-
-        .item-info .item-title {
-            font-weight: bold;
-            margin: 0 0 10px 0;
-            font-size: 1.1em;
-        }
-
-        .item-info .item-details {
+        .main-content.active {
             display: flex;
             flex-direction: column;
-            gap: 8px;
         }
-
-        .item-info .item-theme,
-        .item-info .item-time {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            font-size: 0.8em;
-            opacity: 0.8;
-            margin: 0;
-        }
-
-        .item-info svg {
+        .content-header {
+            padding: 5px 0 15px 0;
             flex-shrink: 0;
         }
 
-        .item-actions {
+        /* --- Mini Calendar --- */
+        .mini-calendar {
             display: flex;
-            flex-direction: column;
-            align-items: flex-end;
+            justify-content: space-between;
             gap: 8px;
         }
-
-        .item-status {
-            font-size: 0.8em;
-            font-weight: bold;
-            padding: 8px 12px;
-            border-radius: 4px;
+        .calendar-day {
+            flex: 1;
+            padding: 8px;
+            border-radius: 8px;
             text-align: center;
-            min-width: 80px;
-            color: white;
+            cursor: pointer;
+            border: 1px solid transparent;
+            transition: background-color 0.2s, border-color 0.2s;
         }
+        .calendar-day:hover { background-color: var(--secondary-color); }
+        .calendar-day.active {
+            background-color: var(--accent-color);
+            color: white;
+            font-weight: 600;
+        }
+        .day-name { font-size: 0.75em; text-transform: uppercase; opacity: 0.7; }
+        .day-date { font-size: 1.1em; font-weight: 600; }
+
+        /* --- View Controls --- */
+        .view-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 5px 10px 5px;
+        }
+        .view-toggle {
+            display: flex;
+            background: var(--secondary-color);
+            border-radius: 8px;
+            padding: 4px;
+        }
+        .toggle-btn {
+            padding: 6px 12px;
+            border: none;
+            background: transparent;
+            color: var(--text-secondary-color);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: 500;
+        }
+        .toggle-btn.active {
+            background: var(--bg-color);
+            color: var(--text-color);
+        }
+        .select-btn {
+            padding: 6px 12px;
+            border: 1px solid var(--border-color);
+            background: var(--secondary-color);
+            color: var(--text-color);
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: 500;
+        }
+
+        /* --- Item List --- */
+        .item-list-container {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding-right: 5px; /* For scrollbar */
+        }
+        .scheduled-item {
+            background: var(--primary-color);
+            border: 1px solid var(--border-color);
+            border-left-width: 4px;
+            border-radius: var(--border-radius);
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            padding: 12px;
+            gap: 10px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .scheduled-item.select-mode {
+            cursor: pointer;
+        }
+        .scheduled-item.selected {
+            box-shadow: 0 0 0 2px var(--accent-color);
+            border-color: var(--accent-color);
+        }
+        .item-checkbox { display: none; }
+        .select-mode .item-checkbox {
+            display: block;
+            flex-shrink: 0;
+            width: 20px;
+            height: 20px;
+            accent-color: var(--accent-color);
+        }
+        .item-content { flex-grow: 1; }
+        .item-title { font-weight: 600; margin-bottom: 8px; }
+        .item-details { font-size: 0.8em; color: var(--text-secondary-color); }
+        .item-actions { display: flex; gap: 8px; }
+        .action-btn {
+            background-color: var(--secondary-color);
+            border: 1px solid var(--border-color);
+            color: var(--text-color);
+            padding: 8px 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.85em;
+            font-weight: 500;
+            transition: background-color 0.2s;
+        }
+        .action-btn:hover { background-color: #3a3a3a; }
+        .action-btn.publish { color: var(--success-color); }
+        .action-btn.reschedule { color: var(--warning-color); }
+
+        /* --- Status & Borders --- */
+        .status-published { border-left-color: var(--success-color); }
+        .status-pending { border-left-color: var(--warning-color); }
+        .status-failed, .status-not-found { border-left-color: var(--danger-color); }
+
+        /* --- Control Panel --- */
+        .control-panel { padding: 10px; }
+        .control-group { margin-bottom: 20px; }
+        .control-group h3 { font-size: 1em; margin-bottom: 10px; color: var(--accent-color); }
+        .control-btn {
+            display: block;
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 10px;
+            font-size: 1em;
+            font-weight: 500;
+            border-radius: 8px;
+            cursor: pointer;
+            border: 1px solid var(--border-color);
+            background: var(--secondary-color);
+            color: var(--text-color);
+            text-align: center;
+        }
+        .control-btn.danger { border-color: var(--danger-color); color: var(--danger-color); }
+
+        /* --- Skeleton Loader --- */
+        .skeleton {
+            background: linear-gradient(90deg, var(--secondary-color) 25%, #3a3a3a 50%, var(--secondary-color) 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+            border-radius: 8px;
+        }
+        .skeleton-item { height: 75px; margin-bottom: 12px; }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
         
-        /* Status-specific styles */
-        .scheduled-item.status-published { border-left-color: var(--success-color); }
-        .scheduled-item.status-published .item-status { background-color: var(--success-color); }
+        /* --- Toast Notification --- */
+        .toast-notification {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: var(--secondary-color);
+            color: var(--text-color);
+            padding: 10px 20px;
+            border-radius: 8px;
+            z-index: 1000;
+            font-size: 0.9em;
+            border-left: 4px solid var(--accent-color);
+            opacity: 0;
+            transition: opacity 0.3s, top 0.3s;
+        }
+        .toast-notification.show {
+            opacity: 1;
+            top: 40px;
+        }
+        .toast-notification.toast-success { border-left-color: var(--success-color); }
+        .toast-notification.toast-error { border-left-color: var(--danger-color); }
 
-        .scheduled-item.status-pending { border-left-color: var(--warning-color); }
-        .scheduled-item.status-pending .item-status { background-color: var(--warning-color); color: black; }
-
-        .scheduled-item.status-failed,
-        .scheduled-item.status-not-found { border-left-color: var(--danger-color); }
-        .scheduled-item.status-failed .item-status,
-        .scheduled-item.status-not-found .item-status { background-color: var(--danger-color); }
+        /* --- Bottom Navigation --- */
+        .bottom-nav {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: var(--bottom-nav-height);
+            background: var(--primary-color);
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+        }
+        .nav-btn {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            color: var(--text-secondary-color);
+            cursor: pointer;
+            border: none;
+            background: transparent;
+            height: 100%;
+        }
+        .nav-btn.active { color: var(--accent-color); }
+        .nav-btn svg { width: 24px; height: 24px; }
+        .nav-label { font-size: 0.7em; }
+        
+        /* --- Batch Action Bar --- */
+        .batch-action-bar {
+            position: fixed;
+            bottom: var(--bottom-nav-height);
+            left: 0;
+            right: 0;
+            height: var(--action-bar-height);
+            background: var(--bg-color);
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-around;
+            padding: 0 15px;
+            transform: translateY(100%);
+            transition: transform 0.3s ease-in-out;
+        }
+        .batch-action-bar.visible {
+            transform: translateY(0);
+        }
+        .batch-action-btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 0.9em;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+        }
+        .batch-action-btn.publish { background: var(--success-color); color: white; }
+        .batch-action-btn.reschedule { background: var(--warning-color); color: black; }
     </style>
 </head>
 <body>
 
-    <div class="app-container">
-        <header class="app-header">
-            <h1>Schedule Status</h1>
-            <div class="status-indicator">
-                <span id="login-status-dot" class="dot orange"></span>
-                <span id="login-status-text">Loading...</span>
+    <div class="app-container" id="app-container">
+        <!-- Live Worker Status Card -->
+        <div class="status-card" id="status-card">
+            <div class="status-grid">
+                <div class="status-item"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 1a4.5 4.5 0 00-4.5 4.5V9H5a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2v-6a2 2 0 00-2-2h-.5V5.5A4.5 4.5 0 0010 1zm3 8V5.5a3 3 0 10-6 0V9h6z" clip-rule="evenodd" /></svg> <span id="login-status-text">Loading...</span></div>
+                <div class="status-item"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M7 3a1 1 0 000 2h6a1 1 0 100-2H7zM4 7a1 1 0 011-1h10a1 1 0 110 2H5a1 1 0 01-1-1zM2 11a2 2 0 012-2h12a2 2 0 012 2v4a2 2 0 01-2 2H4a2 2 0 01-2-2v-4z" /></svg> <span id="db-status-text">DB: Loading...</span></div>
+                <div class="status-item"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M2 4.75A.75.75 0 012.75 4h14.5a.75.75 0 010 1.5H2.75A.75.75 0 012 4.75zM2 10a.75.75 0 01.75-.75h14.5a.75.75 0 010 1.5H2.75A.75.75 0 012 10zm0 5.25a.75.75 0 01.75-.75h14.5a.75.75 0 010 1.5H2.75a.75.75 0 01-.75-.75z" clip-rule="evenodd" /></svg> <span id="queue-status-text">Queue: 0</span></div>
+                <div class="status-item"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-13a.75.75 0 00-1.5 0v5c0 .414.336.75.75.75h4a.75.75 0 000-1.5h-3.25V5z" clip-rule="evenodd" /></svg> <span id="last-check-text">Checked: --:--</span></div>
             </div>
-        </header>
-        <div id="schedule-list" class="schedule-list">
-            <div class="placeholder">Fetching data from server...</div>
+        </div>
+
+        <!-- Main Content: Schedule -->
+        <div class="main-content active" id="view-schedule">
+            <div class="content-header">
+                <div class="mini-calendar" id="mini-calendar"></div>
+            </div>
+            <div class="view-controls">
+                <div class="view-toggle">
+                    <button class="toggle-btn active" data-view="upcoming">Upcoming</button>
+                    <button class="toggle-btn" data-view="history">History</button>
+                </div>
+                <button class="select-btn" id="select-mode-btn">Select</button>
+            </div>
+            <div class="item-list-container" id="schedule-list-container"></div>
+        </div>
+        
+        <!-- Main Content: Control Panel -->
+        <div class="main-content" id="view-control">
+            <div class="control-panel">
+                <div class="control-group">
+                    <h3>Worker Control</h3>
+                    <button class="control-btn" id="worker-toggle-btn" data-action="toggle-worker">Loading...</button>
+                </div>
+                <div class="control-group">
+                    <h3>Database</h3>
+                    <button class="control-btn danger" data-action="switch-db">Switch Active Database</button>
+                </div>
+                <div class="control-group">
+                    <h3>Cache</h3>
+                    <button class="control-btn" data-action="clear-cache">Clear Missed Items Cache</button>
+                </div>
+            </div>
         </div>
     </div>
+
+    <!-- Batch Action Bar -->
+    <div class="batch-action-bar" id="batch-action-bar">
+        <button class="batch-action-btn publish" data-action="batch-publish">Publish (0)</button>
+        <button class="batch-action-btn reschedule" data-action="batch-reschedule">Reschedule (0)</button>
+    </div>
+
+    <!-- Bottom Navigation -->
+    <nav class="bottom-nav">
+        <button class="nav-btn active" data-view="schedule">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12.75 12.75a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM7.5 15.75a.75.75 0 100-1.5.75.75 0 000 1.5zM8.25 17.25a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM9.75 15.75a.75.75 0 100-1.5.75.75 0 000 1.5zM10.5 17.25a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM12 15.75a.75.75 0 100-1.5.75.75 0 000 1.5zM12.75 17.25a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM14.25 15.75a.75.75 0 100-1.5.75.75 0 000 1.5zM15 17.25a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM16.5 15.75a.75.75 0 100-1.5.75.75 0 000 1.5zM15 12.75a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM16.5 13.5a.75.75 0 100-1.5.75.75 0 000 1.5z" /><path fill-rule="evenodd" d="M6.75 2.25A.75.75 0 017.5 3v1.5h9V3A.75.75 0 0118 3v1.5h.75a3 3 0 013 3v11.25a3 3 0 01-3 3H5.25a3 3 0 01-3-3V7.5a3 3 0 013-3H6V3a.75.75 0 01.75-.75zM5.25 6.375a1.5 1.5 0 00-1.5 1.5v11.25a1.5 1.5 0 001.5 1.5h13.5a1.5 1.5 0 001.5-1.5V7.5a1.5 1.5 0 00-1.5-1.5H5.25z" clip-rule="evenodd" /></svg>
+            <span class="nav-label">Schedule</span>
+        </button>
+        <button class="nav-btn" data-view="control">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path fill-rule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.946 1.55l-.26 1.039a5.25 5.25 0 00-2.033.993l-1.08-.29a1.99 1.99 0 00-2.094.88l-1.443 2.5a1.99 1.99 0 00.426 2.438l.868.868a5.25 5.25 0 000 2.768l-.868.868a1.99 1.99 0 00-.426 2.438l1.443 2.5a1.99 1.99 0 002.094.88l1.08-.29a5.25 5.25 0 002.033.993l.26 1.039c.247.887 1.029 1.55 1.946 1.55h1.844c.917 0 1.699-.663 1.946-1.55l.26-1.039a5.25 5.25 0 002.033-.993l1.08.29a1.99 1.99 0 002.094-.88l1.443-2.5a1.99 1.99 0 00-.426-2.438l-.868-.868a5.25 5.25 0 000-2.768l.868-.868a1.99 1.99 0 00.426-2.438l-1.443-2.5a1.99 1.99 0 00-2.094-.88l-1.08.29a5.25 5.25 0 00-2.033-.993l-.26-1.039A1.99 1.99 0 0012.922 2.25H11.08zM12 8.25a3.75 3.75 0 100 7.5 3.75 3.75 0 000-7.5z" clip-rule="evenodd" /></svg>
+            <span class="nav-label">Control</span>
+        </button>
+    </nav>
 
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const tg = window.Telegram.WebApp;
-            tg.ready(); // Let Telegram know the web app is ready
+            tg.ready();
+            tg.expand();
+            
+            // --- STATE MANAGEMENT ---
+            const state = {
+                currentView: 'schedule', // 'schedule' or 'control'
+                scheduleView: 'upcoming', // 'upcoming' or 'history'
+                selectedDate: getYYYYMMDD(new Date()),
+                selectMode: false,
+                selectedItems: new Set(),
+                allData: {
+                    schedule: [],
+                    history: [],
+                    status: {}
+                }
+            };
 
-            // Adjust theme based on Telegram settings
-            const body = document.body;
-            if (tg.colorScheme === 'dark') {
-                body.style.backgroundColor = '#1e1e1e';
-                body.style.color = '#d4d4d4';
-            } else {
-                body.style.backgroundColor = '#ffffff';
-                body.style.color = '#000000';
+            // --- DOM ELEMENTS ---
+            const elements = {
+                appContainer: document.getElementById('app-container'),
+                status: {
+                    login: document.getElementById('login-status-text'),
+                    db: document.getElementById('db-status-text'),
+                    queue: document.getElementById('queue-status-text'),
+                    lastCheck: document.getElementById('last-check-text'),
+                },
+                views: {
+                    schedule: document.getElementById('view-schedule'),
+                    control: document.getElementById('view-control'),
+                },
+                miniCalendar: document.getElementById('mini-calendar'),
+                scheduleListContainer: document.getElementById('schedule-list-container'),
+                viewToggleBtns: document.querySelectorAll('.toggle-btn'),
+                selectModeBtn: document.getElementById('select-mode-btn'),
+                navBtns: document.querySelectorAll('.nav-btn'),
+                batchActionBar: document.getElementById('batch-action-bar'),
+                batchPublishBtn: document.querySelector('[data-action="batch-publish"]'),
+                batchRescheduleBtn: document.querySelector('[data-action="batch-reschedule"]'),
+                workerToggleBtn: document.getElementById('worker-toggle-btn'),
+            };
+
+            // --- UTILITY FUNCTIONS ---
+            function getYYYYMMDD(date) {
+                const year = date.getFullYear();
+                const month = String(date.getMonth() + 1).padStart(2, '0');
+                const day = String(date.getDate()).padStart(2, '0');
+                return `${year}-${month}-${day}`;
             }
 
-            const scheduleList = document.getElementById('schedule-list');
-            const loginStatusDot = document.getElementById('login-status-dot');
-            const loginStatusText = document.getElementById('login-status-text');
-
-            /**
-             * Fetches data from the backend API and updates the UI.
-             */
-            async function fetchData() {
-                try {
-                    // This URL should point to your worker's API endpoint.
-                    // For local testing, you might use 'http://localhost:10000/webapp/data'
-                    const response = await fetch('/webapp/data'); 
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
+            function triggerHaptic(style = 'light') {
+                if (tg.HapticFeedback && tg.HapticFeedback.impactOccurred) {
+                    try {
+                        tg.HapticFeedback.impactOccurred(style);
+                    } catch (e) {
+                        // Ignore haptic errors, common in desktop testing
                     }
-                    const data = await response.json();
-
-                    updateStatus(data.loginStatus);
-                    renderSchedule(data.schedule);
-
-                } catch (error) {
-                    console.error("Failed to fetch data:", error);
-                    scheduleList.innerHTML = '<div class="placeholder">Error: Could not connect to the server.</div>';
-                    loginStatusText.textContent = 'Connection Error';
-                    loginStatusDot.className = 'dot red';
                 }
             }
-
-            /**
-             * Updates the login status indicator.
-             * @param {object} loginStatus - The login status object from the API.
-             */
-            function updateStatus(loginStatus) {
-                if (loginStatus.loggedIn) {
-                    loginStatusDot.className = 'dot green';
-                    loginStatusText.textContent = 'Logged In';
-                } else {
-                    loginStatusDot.className = 'dot red';
-                    loginStatusText.textContent = 'Logged Out';
-                }
-            }
-
-            /**
-             * Renders the list of scheduled items.
-             * @param {Array} items - The array of schedule items.
-             */
-            function renderSchedule(items) {
-                scheduleList.innerHTML = ''; // Clear existing content
-
-                if (!items || items.length === 0) {
-                    scheduleList.innerHTML = '<div class="placeholder">No items are currently scheduled.</div>';
-                    return;
-                }
+            
+            function showToast(message, type = 'success') {
+                const toast = document.createElement('div');
+                toast.className = `toast-notification toast-${type}`;
+                toast.textContent = message;
+                document.body.appendChild(toast);
                 
-                // Sort by date, upcoming items first
-                items.sort((a, b) => new Date(a.scheduledAtUTC) - new Date(b.scheduledAtUTC));
+                setTimeout(() => {
+                    toast.classList.add('show');
+                }, 10);
 
-                const upcomingItems = items.filter(item => item.status !== 'Published');
+                setTimeout(() => {
+                    toast.classList.remove('show');
+                    toast.addEventListener('transitionend', () => toast.remove());
+                }, 3000);
+            }
 
-                if (upcomingItems.length === 0) {
-                    scheduleList.innerHTML = '<div class="placeholder">All scheduled items have been published.</div>';
+            // --- API COMMUNICATION ---
+            async function postAction(action, payload = {}) {
+                triggerHaptic('medium');
+                try {
+                    const response = await fetch('/webapp/v2/action', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action, ...payload })
+                    });
+                    const result = await response.json();
+                    if (!response.ok) throw new Error(result.message || 'Action failed');
+                    showToast(result.message || 'Action successful!');
+                    fetchData(); // Refresh data after action
+                    return true;
+                } catch (error) {
+                    console.error(`Action ${action} failed:`, error);
+                    showToast(error.message, 'error');
+                    return false;
+                }
+            }
+
+            async function fetchData() {
+                if (document.querySelectorAll('.skeleton').length === 0) {
+                    renderSkeleton();
+                }
+                try {
+                    const response = await fetch('/webapp/v2/data');
+                    if (!response.ok) throw new Error('Failed to fetch data');
+                    state.allData = await response.json();
+                    renderAll();
+                } catch (error) {
+                    console.error('Fetch data error:', error);
+                    elements.scheduleListContainer.innerHTML = '<p style="text-align:center; padding-top: 40px;">Error loading data. Please try again.</p>';
+                }
+            }
+
+            // --- RENDERING ---
+            function renderAll() {
+                renderStatusCard();
+                renderMiniCalendar();
+                renderScheduleList();
+                renderWorkerControlButton();
+            }
+            
+            function renderSkeleton() {
+                let skeletonHTML = '';
+                for (let i = 0; i < 5; i++) {
+                    skeletonHTML += '<div class="skeleton skeleton-item"></div>';
+                }
+                elements.scheduleListContainer.innerHTML = skeletonHTML;
+            }
+
+            function renderStatusCard() {
+                const status = state.allData.status || {};
+                elements.status.login.innerHTML = `<div class="dot ${status.loggedIn ? 'green' : 'red'}"></div> <span class="status-value">${status.loggedIn ? 'Logged In' : 'Logged Out'}</span>`;
+                elements.status.db.textContent = `DB: ${status.activeDb || 'N/A'}`;
+                elements.status.queue.textContent = `Queue: ${status.queueCount || 0}`;
+                elements.status.lastCheck.textContent = `Checked: ${status.lastCheckTime || '--:--'}`;
+            }
+            
+            function renderWorkerControlButton() {
+                const status = state.allData.status || {};
+                const btn = elements.workerToggleBtn;
+                if (status.isWorkerPaused) {
+                    btn.textContent = 'Resume Worker';
+                    btn.classList.add('danger');
+                } else {
+                    btn.textContent = 'Pause Worker';
+                    btn.classList.remove('danger');
+                }
+            }
+
+            function renderMiniCalendar() {
+                elements.miniCalendar.innerHTML = '';
+                for (let i = 0; i < 7; i++) {
+                    const date = new Date();
+                    date.setDate(date.getDate() + i);
+                    const dayDiv = document.createElement('div');
+                    dayDiv.className = 'calendar-day';
+                    dayDiv.dataset.date = getYYYYMMDD(date);
+                    if (dayDiv.dataset.date === state.selectedDate) {
+                        dayDiv.classList.add('active');
+                    }
+                    dayDiv.innerHTML = `
+                        <div class="day-name">${date.toLocaleDateString(undefined, { weekday: 'short' })}</div>
+                        <div class="day-date">${date.getDate()}</div>
+                    `;
+                    dayDiv.addEventListener('click', handleCalendarClick);
+                    elements.miniCalendar.appendChild(dayDiv);
+                }
+            }
+
+            function renderScheduleList() {
+                const container = elements.scheduleListContainer;
+                container.innerHTML = '';
+                const dataSet = state.scheduleView === 'upcoming' ? state.allData.schedule : state.allData.history;
+                
+                if (!dataSet) {
+                    container.innerHTML = `<p style="text-align:center; color: var(--text-secondary-color); padding-top: 40px;">No items to show.</p>`;
                     return;
                 }
 
-                upcomingItems.forEach(item => {
+                const filteredData = dataSet.filter(item => {
+                    const itemDateKey = item.publishedAtUTC || item.scheduledAtUTC;
+                    if (!itemDateKey) return false;
+                    const itemDate = new Date(itemDateKey);
+                    return getYYYYMMDD(itemDate) === state.selectedDate;
+                });
+
+                if (filteredData.length === 0) {
+                    container.innerHTML = `<p style="text-align:center; color: var(--text-secondary-color); padding-top: 40px;">No items for this day.</p>`;
+                    return;
+                }
+
+                filteredData.forEach(item => {
                     const itemDiv = document.createElement('div');
                     const status = item.status || 'Pending';
-                    const statusClass = status.toLowerCase().replace(' ', '-');
+                    itemDiv.className = `scheduled-item status-${status.toLowerCase().replace(/ /g, '-')}`;
+                    if (state.selectMode) itemDiv.classList.add('select-mode');
+                    if (state.selectedItems.has(item.id)) itemDiv.classList.add('selected');
                     
-                    itemDiv.className = `scheduled-item status-${statusClass}`;
-                    itemDiv.id = `item-${item.id}`;
+                    itemDiv.dataset.itemId = item.id;
 
-                    const localDate = new Date(item.scheduledAtUTC).toLocaleString(undefined, {
-                        year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-                    });
+                    const dateKey = item.publishedAtUTC || item.scheduledAtUTC;
+                    const localDate = new Date(dateKey).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+                    
+                    let actionButtonsHTML = '';
+                    if (state.scheduleView === 'upcoming') {
+                        if (status === 'Pending' || status === 'Failed') {
+                            actionButtonsHTML += `<button class="action-btn publish" data-action="publish-now">Publish</button>`;
+                        }
+                        if (status === 'Failed' || status === 'Not Found') {
+                            actionButtonsHTML += `<button class="action-btn reschedule" data-action="reschedule">Reschedule</button>`;
+                        }
+                    }
 
                     itemDiv.innerHTML = `
-                        <div class="item-info">
-                            <p class="item-title">${item.title}</p>
-                            <div class="item-details">
-                                <p class="item-theme">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>
-                                    Theme: ${item.theme || 'N/A'}
-                                </p>
-                                <p class="item-time">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
-                                    Scheduled: ${localDate}
-                                </p>
-                            </div>
+                        <input type="checkbox" class="item-checkbox" ${state.selectedItems.has(item.id) ? 'checked' : ''}>
+                        <div class="item-content">
+                            <div class="item-title">${item.title}</div>
+                            <div class="item-details">${localDate} &bull; ${item.theme || 'N/A'}</div>
                         </div>
-                        <div class="item-actions">
-                            <div class="item-status" title="${item.failMessage || ''}">${status}</div>
-                        </div>
+                        <div class="item-actions">${actionButtonsHTML}</div>
                     `;
-                    scheduleList.appendChild(itemDiv);
+                    container.appendChild(itemDiv);
                 });
             }
+            
+            function updateBatchActionBar() {
+                const count = state.selectedItems.size;
+                if (count > 0) {
+                    elements.batchActionBar.classList.add('visible');
+                    elements.batchPublishBtn.textContent = `Publish (${count})`;
+                    elements.batchRescheduleBtn.textContent = `Reschedule (${count})`;
+                } else {
+                    elements.batchActionBar.classList.remove('visible');
+                }
+            }
 
-            // Initial data fetch
+            // --- EVENT HANDLERS ---
+            function handleNavClick(e) {
+                const btn = e.currentTarget;
+                if (btn.dataset.view === state.currentView) return;
+                
+                triggerHaptic();
+                state.currentView = btn.dataset.view;
+
+                elements.navBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+
+                Object.values(elements.views).forEach(v => v.classList.remove('active'));
+                elements.views[state.currentView].classList.add('active');
+            }
+
+            function handleCalendarClick(e) {
+                const dayDiv = e.currentTarget;
+                if (dayDiv.dataset.date === state.selectedDate) return;
+
+                triggerHaptic();
+                state.selectedDate = dayDiv.dataset.date;
+                
+                elements.miniCalendar.querySelector('.active')?.classList.remove('active');
+                dayDiv.classList.add('active');
+                
+                renderScheduleList();
+            }
+            
+            function handleViewToggle(e) {
+                const btn = e.currentTarget;
+                if (btn.dataset.view === state.scheduleView) return;
+                
+                triggerHaptic();
+                state.scheduleView = btn.dataset.view;
+                
+                elements.viewToggleBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                
+                renderScheduleList();
+            }
+            
+            function handleSelectModeToggle() {
+                triggerHaptic();
+                state.selectMode = !state.selectMode;
+                elements.selectModeBtn.textContent = state.selectMode ? 'Cancel' : 'Select';
+                elements.appContainer.classList.toggle('select-mode-active', state.selectMode);
+
+                if (!state.selectMode) {
+                    state.selectedItems.clear();
+                    updateBatchActionBar();
+                }
+                renderScheduleList();
+            }
+            
+            function handleItemClick(e) {
+                const itemDiv = e.target.closest('.scheduled-item');
+                if (!itemDiv || !state.selectMode) return;
+                
+                triggerHaptic('light');
+                const itemId = itemDiv.dataset.itemId;
+                const checkbox = itemDiv.querySelector('.item-checkbox');
+
+                if (state.selectedItems.has(itemId)) {
+                    state.selectedItems.delete(itemId);
+                    checkbox.checked = false;
+                    itemDiv.classList.remove('selected');
+                } else {
+                    state.selectedItems.add(itemId);
+                    checkbox.checked = true;
+                    itemDiv.classList.add('selected');
+                }
+                updateBatchActionBar();
+            }
+
+            function handleActionClick(e) {
+                const btn = e.target.closest('.action-btn');
+                if (!btn) return;
+
+                e.stopPropagation(); // Prevent item click in select mode
+                const action = btn.dataset.action;
+                const itemId = btn.closest('.scheduled-item').dataset.itemId;
+
+                if (action === 'publish-now') {
+                    postAction('publish-now', { itemIds: [itemId] });
+                } else if (action === 'reschedule') {
+                    postAction('reschedule', { itemIds: [itemId], time: '10m' });
+                }
+            }
+            
+            function handleBatchActionClick(e) {
+                const btn = e.currentTarget;
+                const action = btn.dataset.action;
+                const itemIds = Array.from(state.selectedItems);
+                
+                if (action === 'batch-publish') {
+                    postAction('publish-now', { itemIds });
+                } else if (action === 'batch-reschedule') {
+                    postAction('reschedule', { itemIds, time: '10m' });
+                }
+                
+                handleSelectModeToggle();
+            }
+            
+            function handleControlPanelClick(e) {
+                const btn = e.target.closest('.control-btn');
+                if (!btn) return;
+                
+                const action = btn.dataset.action;
+                if (action === 'toggle-worker') {
+                    const workerAction = state.allData.status.isWorkerPaused ? 'resume-worker' : 'pause-worker';
+                    postAction(workerAction);
+                } else {
+                    tg.showConfirm(`Are you sure you want to perform this action: ${action}?`, (confirmed) => {
+                        if (confirmed) {
+                            postAction(action);
+                        }
+                    });
+                }
+            }
+
+            // --- INITIALIZATION ---
+            elements.navBtns.forEach(btn => btn.addEventListener('click', handleNavClick));
+            elements.viewToggleBtns.forEach(btn => btn.addEventListener('click', handleViewToggle));
+            elements.selectModeBtn.addEventListener('click', handleSelectModeToggle);
+            elements.scheduleListContainer.addEventListener('click', handleItemClick);
+            elements.scheduleListContainer.addEventListener('click', handleActionClick);
+            elements.batchPublishBtn.addEventListener('click', handleBatchActionClick);
+            elements.batchRescheduleBtn.addEventListener('click', handleBatchActionClick);
+            elements.views.control.addEventListener('click', handleControlPanelClick);
+
             fetchData();
+            setInterval(fetchData, 30 * 1000);
         });
     </script>
 </body>
