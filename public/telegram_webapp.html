@@ -180,6 +180,7 @@
             padding: 12px;
             gap: 10px;
             transition: transform 0.2s, box-shadow 0.2s;
+            cursor: pointer;
         }
         .scheduled-item.select-mode {
             cursor: pointer;
@@ -332,6 +333,80 @@
         }
         .batch-action-btn.publish { background: var(--success-color); color: white; }
         .batch-action-btn.reschedule { background: var(--warning-color); color: black; }
+
+        /* --- Detail Modal --- */
+        .modal-backdrop {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.6);
+            z-index: 998;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s, visibility 0.3s;
+        }
+        .modal-backdrop.visible {
+            opacity: 1;
+            visibility: visible;
+        }
+        .modal-content {
+            background: var(--primary-color);
+            border-radius: var(--border-radius);
+            padding: 20px;
+            width: calc(100% - 40px);
+            max-width: 500px;
+            border-top: 4px solid var(--accent-color);
+            transform: scale(0.95);
+            transition: transform 0.3s;
+        }
+        .modal-backdrop.visible .modal-content {
+            transform: scale(1);
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .modal-title {
+            font-size: 1.2em;
+            font-weight: 600;
+            margin: 0;
+            padding-right: 10px;
+        }
+        .modal-close-btn {
+            background: none;
+            border: none;
+            color: var(--text-secondary-color);
+            font-size: 1.5em;
+            cursor: pointer;
+        }
+        .detail-item {
+            margin-bottom: 12px;
+            font-size: 0.95em;
+        }
+        .detail-label {
+            font-size: 0.8em;
+            color: var(--text-secondary-color);
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .detail-value {
+            background: var(--secondary-color);
+            padding: 8px;
+            border-radius: 8px;
+            word-wrap: break-word;
+        }
+        .detail-value.status-failed {
+            color: var(--danger-color);
+            font-weight: 500;
+        }
+
     </style>
 </head>
 <body>
@@ -399,6 +474,19 @@
         </button>
     </nav>
 
+    <!-- Detail Modal -->
+    <div class="modal-backdrop" id="detail-modal-backdrop">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title" id="modal-title">Item Details</h2>
+                <button class="modal-close-btn" id="modal-close-btn">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body">
+                <!-- Content will be injected here -->
+            </div>
+        </div>
+    </div>
+
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const tg = window.Telegram.WebApp;
@@ -435,6 +523,12 @@
                 batchPublishBtn: document.querySelector('[data-action="batch-publish"]'),
                 batchRescheduleBtn: document.querySelector('[data-action="batch-reschedule"]'),
                 workerToggleBtn: document.getElementById('worker-toggle-btn'),
+                modal: {
+                    backdrop: document.getElementById('detail-modal-backdrop'),
+                    title: document.getElementById('modal-title'),
+                    body: document.getElementById('modal-body'),
+                    closeBtn: document.getElementById('modal-close-btn'),
+                }
             };
 
             function getYYYYMMDD(date) {
@@ -578,7 +672,6 @@
                         return getYYYYMMDD(new Date(itemDateKey)) === state.selectedDate;
                     });
 
-                    // --- FIX: SORTING LOGIC ADDED HERE ---
                     const statusOrder = { 'Pending': 1, 'Failed': 2, 'Not Found': 3, 'Published': 4 };
                     displayData.sort((a, b) => {
                         const statusA = a.status || 'Pending';
@@ -642,6 +735,44 @@
                 }
             }
 
+            function showDetailModal(item) {
+                elements.modal.title.textContent = item.title;
+                const dateKey = item.publishedAtUTC || item.scheduledAtUTC;
+                const localDate = new Date(dateKey).toLocaleString();
+
+                let bodyHTML = `
+                    <div class="detail-item">
+                        <div class="detail-label">Status</div>
+                        <div class="detail-value">${item.status || 'Pending'}</div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">Time</div>
+                        <div class="detail-value">${localDate}</div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">Theme</div>
+                        <div class="detail-value">${item.theme || 'N/A'}</div>
+                    </div>
+                `;
+
+                if (item.failMessage) {
+                    bodyHTML += `
+                        <div class="detail-item">
+                            <div class="detail-label">Failure Reason</div>
+                            <div class="detail-value status-failed">${item.failMessage}</div>
+                        </div>
+                    `;
+                }
+
+                elements.modal.body.innerHTML = bodyHTML;
+                elements.modal.backdrop.classList.add('visible');
+                triggerHaptic('light');
+            }
+
+            function hideDetailModal() {
+                elements.modal.backdrop.classList.remove('visible');
+            }
+
             function handleNavClick(e) {
                 const btn = e.currentTarget;
                 if (btn.dataset.view === state.currentView) return;
@@ -688,20 +819,30 @@
             
             function handleItemClick(e) {
                 const itemDiv = e.target.closest('.scheduled-item');
-                if (!itemDiv || !state.selectMode) return;
-                triggerHaptic('light');
-                const itemId = itemDiv.dataset.itemId;
-                const checkbox = itemDiv.querySelector('.item-checkbox');
-                if (state.selectedItems.has(itemId)) {
-                    state.selectedItems.delete(itemId);
-                    checkbox.checked = false;
-                    itemDiv.classList.remove('selected');
+                if (!itemDiv) return;
+
+                if (state.selectMode) {
+                    triggerHaptic('light');
+                    const itemId = itemDiv.dataset.itemId;
+                    const checkbox = itemDiv.querySelector('.item-checkbox');
+                    if (state.selectedItems.has(itemId)) {
+                        state.selectedItems.delete(itemId);
+                        checkbox.checked = false;
+                        itemDiv.classList.remove('selected');
+                    } else {
+                        state.selectedItems.add(itemId);
+                        checkbox.checked = true;
+                        itemDiv.classList.add('selected');
+                    }
+                    updateBatchActionBar();
                 } else {
-                    state.selectedItems.add(itemId);
-                    checkbox.checked = true;
-                    itemDiv.classList.add('selected');
+                    const itemId = itemDiv.dataset.itemId;
+                    const dataSet = state.scheduleView === 'history' ? state.allData.history : state.allData.schedule;
+                    const item = dataSet.find(i => i.id === itemId);
+                    if (item) {
+                        showDetailModal(item);
+                    }
                 }
-                updateBatchActionBar();
             }
 
             function handleActionClick(e) {
@@ -745,6 +886,7 @@
                 }
             }
 
+            // --- INITIALIZATION ---
             elements.navBtns.forEach(btn => btn.addEventListener('click', handleNavClick));
             elements.viewToggleBtns.forEach(btn => btn.addEventListener('click', handleViewToggle));
             elements.selectModeBtn.addEventListener('click', handleSelectModeToggle);
@@ -753,6 +895,12 @@
             elements.batchPublishBtn.addEventListener('click', handleBatchActionClick);
             elements.batchRescheduleBtn.addEventListener('click', handleBatchActionClick);
             elements.views.control.addEventListener('click', handleControlPanelClick);
+            elements.modal.closeBtn.addEventListener('click', hideDetailModal);
+            elements.modal.backdrop.addEventListener('click', (e) => {
+                if (e.target === elements.modal.backdrop) {
+                    hideDetailModal();
+                }
+            });
 
             fetchData();
             setInterval(fetchData, 30 * 1000);
