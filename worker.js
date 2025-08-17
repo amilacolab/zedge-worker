@@ -6,6 +6,16 @@
 // with the Telegram bot and the new interactive web app.
 // =================================================================
 
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
+  // You might want to send a Telegram notification here for critical failures
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('CRITICAL: Uncaught Exception:', error);
+  process.exit(1); // It's often recommended to restart on uncaught exceptions
+});
+
 // --- SECTION 1: IMPORTS & GLOBAL SETUP ---
 const fs = require('fs').promises;
 const path = require('path');
@@ -28,6 +38,7 @@ let missedItemsNotificationSent = false;
 let isWorkerPaused = false;
 let mainIntervalId = null;
 let lastCheckTime = null; // Will store as ISO string
+let browser;
 
 // Database state
 let primaryPools = [];
@@ -191,9 +202,9 @@ async function loginAndSaveSession() {
     }
 
     console.log('Attempting to log in to Zedge (2-step process)...');
-    const browser = await chromium.launch();
+    let context;
     try {
-        const context = await browser.newContext();
+        context = await browser.newContext();
         const page = await context.newPage();
 
         await page.goto('https://account.zedge.net/v2/login-with-email', { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -227,18 +238,17 @@ async function loginAndSaveSession() {
         } catch (e) { /* ignore if file doesn't exist */ }
         return { loggedIn: false, error: `Login attempt failed.` };
     } finally {
-        if (browser) await browser.close();
+        if (context) await context.close();
     }
 }
 
 async function checkLoginStatus() {
     console.log('Performing Zedge login status check...');
-    let browser;
+    let context; 
     try {
         await fs.access(SESSION_FILE_PATH);
         const storageState = await fs.readFile(SESSION_FILE_PATH, 'utf-8');
-        browser = await chromium.launch();
-        const context = await browser.newContext({ storageState: JSON.parse(storageState) });
+        context = await browser.newContext({ storageState: JSON.parse(storageState) });
         const page = await context.newPage();
         await page.goto('https://upload.zedge.net/', { waitUntil: 'domcontentloaded' });
 
@@ -257,13 +267,13 @@ async function checkLoginStatus() {
         console.error('An unknown error occurred during status check. Attempting re-login.', error.message);
         return await loginAndSaveSession();
     } finally {
-        if (browser) await browser.close();
+        if (context) await context.close();
     }
 }
 
 async function performPublish(scheduledItem) {
     console.log(`--- Starting publish process for: "${scheduledItem.title}" ---`);
-    let browser;
+    let context;
     try {
         const loginStatus = await checkLoginStatus();
         if (!loginStatus.loggedIn) {
@@ -271,8 +281,9 @@ async function performPublish(scheduledItem) {
         }
 
         const storageState = await fs.readFile(SESSION_FILE_PATH, 'utf-8');
-        browser = await chromium.launch();
-        const context = await browser.newContext({ storageState: JSON.parse(storageState) });
+        context = await browser.newContext({ storageState: JSON.parse(storageState) }); // <-- RE-USE a global browser
+        // browser = await chromium.launch();
+        // const context = await browser.newContext({ storageState: JSON.parse(storageState) });
         const page = await context.newPage();
 
         await page.route('**/*', (route) => {
@@ -404,7 +415,7 @@ async function performPublish(scheduledItem) {
         console.error(`Failed to publish "${scheduledItem.title}":`, error);
         return { status: 'failed', message: error.message };
     } finally {
-        if (browser) { await browser.close(); }
+        if (context) { await context.close(); } // <-- IMPORTANT: Close the context, NOT the browser
     }
 }
 
@@ -685,6 +696,8 @@ const PORT = process.env.PORT || 10000;
 
 async function startApp() {
     try {
+        browser = await chromium.launch(); // <-- ADD THIS LINE
+        console.log("Persistent browser instance created."); // <-- ADD THIS LINE
         await initializeDatabases();
         await reconcileActiveDbIndex();
         
@@ -705,6 +718,7 @@ async function startApp() {
         });
     } catch (error) {
         console.error("Failed to start the application:", error.message);
+        if (browser) await browser.close();
         process.exit(1);
     }
 }
