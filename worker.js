@@ -202,7 +202,7 @@ async function loginAndSaveSession() {
     }
 
     console.log('Attempting to log in to Zedge (2-step process)...');
-    let context;
+    let context; // Define context here to be accessible in finally
     try {
         context = await browser.newContext();
         const page = await context.newPage();
@@ -238,13 +238,14 @@ async function loginAndSaveSession() {
         } catch (e) { /* ignore if file doesn't exist */ }
         return { loggedIn: false, error: `Login attempt failed.` };
     } finally {
+        // CRITICAL: Ensure context is always closed
         if (context) await context.close();
     }
 }
 
 async function checkLoginStatus() {
     console.log('Performing Zedge login status check...');
-    let context; 
+    let context; // Define context here to be accessible in finally
     try {
         await fs.access(SESSION_FILE_PATH);
         const storageState = await fs.readFile(SESSION_FILE_PATH, 'utf-8');
@@ -255,6 +256,9 @@ async function checkLoginStatus() {
         const finalUrl = page.url();
         if (finalUrl.includes('account.zedge.net')) {
             console.log('Session is invalid or expired. Attempting to re-login.');
+            // We must close the current context before calling the login function which creates its own.
+            await context.close();
+            context = null; // Prevent it from being closed again in finally
             return await loginAndSaveSession();
         }
         return { loggedIn: true };
@@ -267,6 +271,7 @@ async function checkLoginStatus() {
         console.error('An unknown error occurred during status check. Attempting re-login.', error.message);
         return await loginAndSaveSession();
     } finally {
+        // CRITICAL: Ensure context is always closed
         if (context) await context.close();
     }
 }
