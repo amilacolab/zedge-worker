@@ -201,29 +201,39 @@ async function loginAndSaveSession() {
         return { loggedIn: false, error: 'Server is missing credentials. Please set them in the Render dashboard.' };
     }
 
-    console.log('Attempting to log in to Zedge (2-step process)...');
-    let context; // Define context here to be accessible in finally
+    console.log('Attempting to log in to Zedge (v2 with debugging)...');
+    let context;
+    let page; // Define page here to be accessible in catch block
     try {
         context = await browser.newContext();
-        const page = await context.newPage();
+        page = await context.newPage();
 
-        await page.goto('https://account.zedge.net/v2/login-with-email', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        // MODIFIED: Increased timeout for all navigation actions
+        const navigationTimeout = 60000;
+
+        await page.goto('https://account.zedge.net/v2/login-with-email', { waitUntil: 'domcontentloaded', timeout: navigationTimeout });
 
         console.log('Filling email address...');
-        await page.waitForSelector('input[type="email"]');
-        await page.fill('input[type="email"]', process.env.ZEDGE_EMAIL);
+        await page.waitForSelector('input[name="email"]', { timeout: navigationTimeout });
+        await page.fill('input[name="email"]', process.env.ZEDGE_EMAIL);
 
         console.log('Clicking "Continue with password"...');
         await page.click('button:has-text("Continue with password")');
 
-        console.log('Waiting for password page...');
-        await page.waitForSelector('input[type="password"]');
-        await page.fill('input[type="password"]', process.env.ZEDGE_PASSWORD);
+        // NEW: Wait for the navigation to the password page to complete
+        console.log('Waiting for password page to load...');
+        await page.waitForURL('**/login-with-password**', { timeout: navigationTimeout });
 
+        // MODIFIED: More specific selector for the password input
+        console.log('Filling password...');
+        await page.waitForSelector('input[name="password"]', { timeout: navigationTimeout });
+        await page.fill('input[name="password"]', process.env.ZEDGE_PASSWORD);
+        
         console.log('Clicking final "Continue" button...');
         await page.click('button:has-text("Continue")');
-
-        await page.waitForURL('**/account.zedge.net/v2/user**', { timeout: 60000 });
+        
+        console.log('Waiting for login confirmation...');
+        await page.waitForURL('**/account.zedge.net/v2/user**', { timeout: navigationTimeout });
 
         console.log('Login successful. Saving session state...');
         const storageState = await context.storageState();
@@ -231,14 +241,26 @@ async function loginAndSaveSession() {
 
         console.log('Session file has been created/updated.');
         return { loggedIn: true };
+
     } catch (error) {
         console.error('Failed to log in to Zedge:', error.message);
+        
+        // NEW: Take a screenshot on failure for debugging
+        if (page) {
+            try {
+                await page.screenshot({ path: 'login_error.png' });
+                console.log('SCREENSHOT SAVED: A screenshot named "login_error.png" has been saved to help diagnose the issue.');
+            } catch (screenshotError) {
+                console.error('Failed to take screenshot:', screenshotError);
+            }
+        }
+        
         try {
             await fs.unlink(SESSION_FILE_PATH);
         } catch (e) { /* ignore if file doesn't exist */ }
+        
         return { loggedIn: false, error: `Login attempt failed.` };
     } finally {
-        // CRITICAL: Ensure context is always closed
         if (context) await context.close();
     }
 }
