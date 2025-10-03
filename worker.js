@@ -213,7 +213,7 @@ async function loginAndSaveSession() {
 
         console.log('Filling email address...');
         await page.waitForSelector('input[name="email"]', { timeout: navigationTimeout });
-        await page.fill('input[name="email"]', process.env.ZEDGE_EMAIL);
+        await page.type('input[name="email"]', process.env.ZEDGE_EMAIL, { delay: 100 });
 
         console.log('Clicking "Continue with password"...');
         await page.click('button:has-text("Continue with password")');
