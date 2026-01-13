@@ -249,7 +249,11 @@ function handleClearMissedCommand(chatId) {
 async function sendScreenshot(filePath, caption) {
     if (bot && notificationChatId) {
         try {
-            await bot.sendPhoto(notificationChatId, filePath, { caption: caption, parse_mode: 'Markdown' });
+            // Change parse_mode to 'HTML' to avoid Markdown parsing errors with underscores
+            await bot.sendPhoto(notificationChatId, filePath, { 
+                caption: caption, 
+                parse_mode: 'HTML' 
+            });
             console.log(`Screenshot ${filePath} sent to Telegram.`);
         } catch (error) {
             console.error('Failed to send screenshot to Telegram:', error.message);
