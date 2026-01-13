@@ -241,4 +241,21 @@ function handleClearMissedCommand(chatId) {
     }
 }
 
-module.exports = { startBot, sendNotification };
+/**
+ * Sends a photo/screenshot to the pre-configured chat ID.
+ * @param {string} filePath - The path to the image file.
+ * @param {string} caption - Optional text to accompany the image.
+ */
+async function sendScreenshot(filePath, caption) {
+    if (bot && notificationChatId) {
+        try {
+            await bot.sendPhoto(notificationChatId, filePath, { caption: caption, parse_mode: 'Markdown' });
+            console.log(`Screenshot ${filePath} sent to Telegram.`);
+        } catch (error) {
+            console.error('Failed to send screenshot to Telegram:', error.message);
+        }
+    }
+}
+
+// Update the exports at the bottom of telegram_bot.js
+module.exports = { startBot, sendNotification, sendScreenshot };

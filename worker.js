@@ -4,28 +4,30 @@
 // This worker runs on a server and handles all background tasks,
 // including checking the schedule, publishing items, and interacting
 // with the Telegram bot and the new interactive web app.
-// It communicates with a separate Publisher Service for browser tasks.
 // =================================================================
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
+  // You might want to send a Telegram notification here for critical failures
 });
 
 process.on('uncaughtException', (error) => {
   console.error('CRITICAL: Uncaught Exception:', error);
-  process.exit(1);
+  process.exit(1); // It's often recommended to restart on uncaught exceptions
 });
 
 // --- SECTION 1: IMPORTS & GLOBAL SETUP ---
 const fs = require('fs').promises;
 const path = require('path');
 const { Pool } = require('pg');
+const { chromium } = require('playwright');
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const telegramBot = require('./telegram_bot.js');
 
 // --- CONFIGURATION & STATE ---
+const SESSION_FILE_PATH = 'session.json';
 const RECENTLY_PUBLISHED_LIMIT = 20;
 
 let publishingInProgress = new Set();
@@ -35,7 +37,8 @@ let missedItemsCache = [];
 let missedItemsNotificationSent = false;
 let isWorkerPaused = false;
 let mainIntervalId = null;
-let lastCheckTime = null;
+let lastCheckTime = null; // Will store as ISO string
+let browser;
 
 // Database state
 let primaryPools = [];
@@ -191,21 +194,262 @@ async function saveData(appData) {
     }
 }
 
-// --- NEW API-BASED LOGIN & PUBLISHING LOGIC ---
-async function checkLoginStatus() {
-    console.log('Performing Zedge login status check via Publisher service...');
+// --- LOGIN & PUBLISHING LOGIC (RESTORED) ---
+async function loginAndSaveSession() {
+    if (!process.env.ZEDGE_EMAIL || !process.env.ZEDGE_PASSWORD) {
+        console.error('CRITICAL: ZEDGE_EMAIL or ZEDGE_PASSWORD environment variables are not set on the server.');
+        return { loggedIn: false, error: 'Server is missing credentials. Please set them in the Render dashboard.' };
+    }
+
+    console.log('Attempting to log in to Zedge (v3 - Final SPA Logic)...');
+    let context;
+    let page;
     try {
-        const publisherServiceUrl = process.env.PUBLISHER_SERVICE_URL;
-        if (!publisherServiceUrl) {
-            return { loggedIn: false, error: 'PUBLISHER_SERVICE_URL not set.' };
-        }
-        const response = await fetch(`${publisherServiceUrl}/status`);
-        return await response.json();
+        context = await browser.newContext();
+        page = await context.newPage();
+        const navigationTimeout = 60000;
+
+        await page.goto('https://account.zedge.net/v2/login-with-email', { waitUntil: 'domcontentloaded', timeout: navigationTimeout });
+
+        console.log('Filling email address...');
+        await page.waitForSelector('input[name="email"]', { timeout: navigationTimeout });
+        await page.type('input[name="email"]', process.env.ZEDGE_EMAIL, { delay: 100 });
+
+        console.log('Clicking "Continue with password"...');
+        await page.click('button:has-text("Continue with password")');
+        
+        // --- CRITICAL FIX ---
+        // The page does not navigate. Instead, we wait for the password selector to appear dynamically.
+        console.log('Waiting for password field to appear...');
+        await page.waitForSelector('input[name="password"]', { timeout: navigationTimeout });
+        // --- END OF FIX ---
+
+        console.log('Filling password...');
+        await page.fill('input[name="password"]', process.env.ZEDGE_PASSWORD);
+        
+        console.log('Clicking final "Continue" button...');
+        await page.click('button:has-text("Continue")');
+        
+        console.log('Waiting for login confirmation redirect...');
+        // The final step after successful login IS a navigation, so we wait for that URL.
+        await page.waitForURL('**/account.zedge.net/v2/user**', { timeout: navigationTimeout });
+
+        console.log('Login successful. Saving session state...');
+        const storageState = await context.storageState();
+        await fs.writeFile(SESSION_FILE_PATH, JSON.stringify(storageState));
+
+        console.log('Session file has been created/updated.');
+        return { loggedIn: true };
+
     } catch (error) {
-        console.error('Could not communicate with Publisher service for status check:', error.message);
-        return { loggedIn: false, error: 'Could not reach Publisher service.' };
+        console.error('Failed to log in to Zedge:', error.message);
+        
+        if (page) {
+            try {
+                const errorPath = 'login_error.png';
+                await page.screenshot({ path: errorPath });
+                console.log(`SCREENSHOT SAVED: A screenshot named "${errorPath}" has been saved.`);
+                
+                // --- NEW: Send the screenshot to Telegram ---
+                await telegramBot.sendScreenshot(errorPath, `❌ **Login Failed**\nTarget: Zedge\nError: ${error.message}`);
+                // --------------------------------------------
+
+            } catch (screenshotError) {
+                console.error('Failed to take screenshot:', screenshotError);
+            }
+        }
+        
+        try {
+            await fs.unlink(SESSION_FILE_PATH);
+        } catch (e) { /* ignore */ }
+        
+        return { loggedIn: false, error: `Login attempt failed.` };
+    } finally {
+        if (context) await context.close();
     }
 }
+
+async function checkLoginStatus() {
+    console.log('Performing Zedge login status check...');
+    let context; // Define context here to be accessible in finally
+    try {
+        await fs.access(SESSION_FILE_PATH);
+        const storageState = await fs.readFile(SESSION_FILE_PATH, 'utf-8');
+        context = await browser.newContext({ storageState: JSON.parse(storageState) });
+        const page = await context.newPage();
+        await page.goto('https://upload.zedge.net/', { waitUntil: 'domcontentloaded' });
+
+        const finalUrl = page.url();
+        if (finalUrl.includes('account.zedge.net')) {
+            console.log('Session is invalid or expired. Attempting to re-login.');
+            // We must close the current context before calling the login function which creates its own.
+            await context.close();
+            context = null; // Prevent it from being closed again in finally
+            return await loginAndSaveSession();
+        }
+        return { loggedIn: true };
+
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            console.log('session.json not found on server. Attempting initial login.');
+            return await loginAndSaveSession();
+        }
+        console.error('An unknown error occurred during status check. Attempting re-login.', error.message);
+        return await loginAndSaveSession();
+    } finally {
+        // CRITICAL: Ensure context is always closed
+        if (context) await context.close();
+    }
+}
+
+async function performPublish(scheduledItem) {
+    console.log(`--- Starting publish process for: "${scheduledItem.title}" ---`);
+    let context;
+    try {
+        const loginStatus = await checkLoginStatus();
+        if (!loginStatus.loggedIn) {
+            throw new Error(`Publishing failed because login is not active. Reason: ${loginStatus.error}`);
+        }
+
+        const storageState = await fs.readFile(SESSION_FILE_PATH, 'utf-8');
+        context = await browser.newContext({ storageState: JSON.parse(storageState) }); // <-- RE-USE a global browser
+        // browser = await chromium.launch();
+        // const context = await browser.newContext({ storageState: JSON.parse(storageState) });
+        const page = await context.newPage();
+
+        await page.route('**/*', (route) => {
+            const resourceType = route.request().resourceType();
+            if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+                route.abort();
+            } else {
+                route.continue();
+            }
+        });
+
+        const ZEDGE_PROFILES = {
+            Normal: 'https://upload.zedge.net/business/4e5d55ef-ea99-4913-90cf-09431dc1f28f/profiles/0c02b238-4bd0-479e-91f7-85c6df9c8b0f/content/WALLPAPER',
+            Black: 'https://upload.zedge.net/business/4e5d55ef-ea99-4913-90cf-09431dc1f28f/profiles/a90052da-0ec5-4877-a73f-034c6da5d45a/content/WALLPAPER'
+        };
+
+        const theme = scheduledItem.theme || '';
+        const targetProfileName = theme.toLowerCase().includes('black') ? 'Black' : 'Normal';
+        const targetProfileUrl = ZEDGE_PROFILES[targetProfileName];
+        if (!targetProfileUrl) throw new Error(`Could not determine a valid profile URL for theme: "${theme}"`);
+
+        console.log(`Loading profile: ${targetProfileName}`);
+        await page.goto(targetProfileUrl, { waitUntil: 'domcontentloaded' });
+
+        console.log(`Searching for DRAFT: "${scheduledItem.title}"`);
+        const foundAndClicked = await page.evaluate(async (itemTitle) => {
+            return new Promise((resolve) => {
+                const timeout = 45000, interval = 1500;
+                let elapsedTime = 0;
+                const searchInterval = setInterval(() => {
+                    const elements = document.querySelectorAll('div[class*="StyledTitle"], div[title], span');
+                    for (const el of elements) {
+                        if (el.textContent.trim() === itemTitle || el.getAttribute('title') === itemTitle) {
+                            const statusContainer = el.parentElement;
+                            const statusElement = statusContainer ? statusContainer.querySelector('span[type="DEFAULT"]') : null;
+                            if (statusElement && statusElement.textContent.trim().toUpperCase() === 'DRAFT') {
+                                clearInterval(searchInterval);
+                                const clickableTarget = el.closest('div[role="button"], a');
+                                if (clickableTarget) { clickableTarget.click(); } else { el.click(); }
+                                resolve(true);
+                                return;
+                            }
+                        }
+                    }
+                    const loadMoreButton = Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.trim().toLowerCase() === 'load more');
+                    if (loadMoreButton) loadMoreButton.click();
+                    elapsedTime += interval;
+                    if (elapsedTime >= timeout) {
+                        clearInterval(searchInterval);
+                        resolve(false);
+                    }
+                }, interval);
+            });
+        }, scheduledItem.title);
+
+        if (!foundAndClicked) throw new Error(`Could not find a DRAFT with the title "${scheduledItem.title}"`);
+
+        console.log("Found DRAFT, clicking it. Waiting for details page.");
+        await page.waitForTimeout(8000);
+
+        const clickedPublish = await page.evaluate(() => {
+            return new Promise((resolve) => {
+                const timeout = 15000, interval = 1000;
+                let elapsedTime = 0;
+                const findButtonInterval = setInterval(() => {
+                    const publishButton = Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.trim().toLowerCase() === 'publish');
+                    if (publishButton && !publishButton.disabled) {
+                        clearInterval(findButtonInterval);
+                        publishButton.click();
+                        resolve(true);
+                        return;
+                    }
+                    elapsedTime += interval;
+                    if (elapsedTime >= timeout) {
+                        clearInterval(findButtonInterval);
+                        resolve(false);
+                    }
+                }, interval);
+            });
+        });
+
+        if (!clickedPublish) throw new Error('The "Publish" button was not found or was disabled.');
+
+        console.log("Clicked 'Publish'. Waiting for system to process...");
+        await page.waitForTimeout(8000);
+
+        console.log(`Navigating back to ${targetProfileName} profile for verification.`);
+        await page.goto(targetProfileUrl);
+        await page.reload({ waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(5000);
+
+        console.log(`Verifying PUBLISHED status for: "${scheduledItem.title}"`);
+        const isPublished = await page.evaluate(async (itemTitle) => {
+            return new Promise((resolve) => {
+                const timeout = 60000, interval = 2000;
+                let elapsedTime = 0;
+                const verifyInterval = setInterval(() => {
+                    const elements = document.querySelectorAll('div[class*="StyledTitle"], div[title], span');
+                    for (const el of elements) {
+                        if (el.textContent.trim() === itemTitle || el.getAttribute('title') === itemTitle) {
+                            const container = el.closest('div[role="button"]')?.parentElement ?? el.parentElement;
+                            const statusElement = container ? container.querySelector('span[type="SUCCESS"]') : null;
+                            if (statusElement && statusElement.textContent.trim().toUpperCase() === 'PUBLISHED') {
+                                clearInterval(verifyInterval);
+                                resolve(true);
+                                return;
+                            }
+                        }
+                    }
+                    const loadMoreButton = Array.from(document.querySelectorAll('button')).find(btn => btn.textContent.trim().toLowerCase() === 'load more');
+                    if (loadMoreButton) loadMoreButton.click();
+                    elapsedTime += interval;
+                    if (elapsedTime >= timeout) {
+                        clearInterval(verifyInterval);
+                        resolve(false);
+                    }
+                }, interval);
+            });
+        }, scheduledItem.title);
+
+        if (!isPublished) {
+            throw new Error('Verification failed. Item status was not updated to "Published" after waiting.');
+        }
+
+        console.log(`--- Successfully published and verified "${scheduledItem.title}" ---`);
+        return { status: 'success', message: 'Published and verified successfully.' };
+
+    } catch (error) {
+        console.error(`Failed to publish "${scheduledItem.title}":`, error);
+        return { status: 'failed', message: error.message };
+    } finally {
+        if (context) { await context.close(); } // <-- IMPORTANT: Close the context, NOT the browser
+    }
+}
+
 
 // --- Worker & Bot Functions ---
 function sendNotification(message) { telegramBot.sendNotification(message); }
@@ -388,37 +632,7 @@ async function processPublishingQueue() {
 }
 
 async function executePublishWorkflow(scheduledItem) {
-    let result;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 90000); // 90-second timeout for cold starts
-
-    try {
-        const publisherServiceUrl = process.env.PUBLISHER_SERVICE_URL;
-        if (!publisherServiceUrl) {
-            throw new Error("PUBLISHER_SERVICE_URL is not set.");
-        }
-
-        console.log(`Sending publish request for "${scheduledItem.title}" to Publisher service...`);
-        const response = await fetch(`${publisherServiceUrl}/publish`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(scheduledItem),
-            signal: controller.signal // Link the timeout controller
-        });
-
-        result = await response.json();
-        if (!response.ok) {
-            throw new Error(result.message || `Publisher service returned status ${response.status}`);
-        }
-
-    } catch (error) {
-        console.error(`Failed to execute publish workflow for "${scheduledItem.title}":`, error.message);
-        result = { status: 'failed', message: `Communication error with publisher: ${error.message}` };
-    } finally {
-        clearTimeout(timeoutId);
-    }
-    
-    // The rest of this function (updating the database, sending notifications) remains EXACTLY THE SAME.
+    const result = await performPublish(scheduledItem); 
     const appData = await loadData();
     const itemIndex = appData.schedule.findIndex(i => i.id === scheduledItem.id);
 
@@ -427,7 +641,9 @@ async function executePublishWorkflow(scheduledItem) {
         
         if (result.status === 'success') {
             appData.schedule.splice(itemIndex, 1);
-            if (!Array.isArray(appData.recentlyPublished)) appData.recentlyPublished = [];
+            if (!Array.isArray(appData.recentlyPublished)) {
+                appData.recentlyPublished = [];
+            }
             itemToProcess.status = 'Published';
             itemToProcess.publishedAtUTC = new Date().toISOString();
             appData.recentlyPublished.unshift(itemToProcess);
@@ -441,7 +657,6 @@ async function executePublishWorkflow(scheduledItem) {
         await saveData(appData);
     }
 }
-
 
 function clearMissedItemsCache() { missedItemsCache = []; missedItemsNotificationSent = false; return {success: true, message: "Missed items cache cleared."};}
 function getMissedItems() { return missedItemsCache; }
@@ -513,6 +728,8 @@ const PORT = process.env.PORT || 10000;
 
 async function startApp() {
     try {
+        browser = await chromium.launch(); // <-- ADD THIS LINE
+        console.log("Persistent browser instance created."); // <-- ADD THIS LINE
         await initializeDatabases();
         await reconcileActiveDbIndex();
         
@@ -533,6 +750,7 @@ async function startApp() {
         });
     } catch (error) {
         console.error("Failed to start the application:", error.message);
+        if (browser) await browser.close();
         process.exit(1);
     }
 }
