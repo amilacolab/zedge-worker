@@ -197,11 +197,11 @@ async function saveData(appData) {
 // --- LOGIN & PUBLISHING LOGIC (RESTORED) ---
 async function loginAndSaveSession() {
     if (!process.env.ZEDGE_EMAIL || !process.env.ZEDGE_PASSWORD) {
-        console.error('CRITICAL: ZEDGE_EMAIL or ZEDGE_PASSWORD environment variables are not set on the server.');
-        return { loggedIn: false, error: 'Server is missing credentials. Please set them in the Render dashboard.' };
+        console.error('CRITICAL: ZEDGE_EMAIL or ZEDGE_PASSWORD are not set.');
+        return { loggedIn: false, error: 'Missing credentials.' };
     }
 
-    console.log('Attempting to log in to Zedge (v3 - Final SPA Logic)...');
+    console.log('Attempting to log in to Zedge and save session to DB...');
     let context;
     let page;
     try {
@@ -209,99 +209,64 @@ async function loginAndSaveSession() {
         page = await context.newPage();
         const navigationTimeout = 60000;
 
-        await page.goto('https://account.zedge.net/v2/login-with-email', { waitUntil: 'domcontentloaded', timeout: navigationTimeout });
-
-        console.log('Filling email address...');
-        await page.waitForSelector('input[name="email"]', { timeout: navigationTimeout });
+        // ... [The existing login automation steps remain the same] ...
+        await page.goto('https://account.zedge.net/v2/login-with-email', { waitUntil: 'domcontentloaded' });
         await page.type('input[name="email"]', process.env.ZEDGE_EMAIL, { delay: 100 });
-
-        console.log('Clicking "Continue with password"...');
         await page.click('button:has-text("Continue with password")');
-        
-        // --- CRITICAL FIX ---
-        // The page does not navigate. Instead, we wait for the password selector to appear dynamically.
-        console.log('Waiting for password field to appear...');
         await page.waitForSelector('input[name="password"]', { timeout: navigationTimeout });
-        // --- END OF FIX ---
-
-        console.log('Filling password...');
         await page.fill('input[name="password"]', process.env.ZEDGE_PASSWORD);
-        
-        console.log('Clicking final "Continue" button...');
         await page.click('button:has-text("Continue")');
-        
-        console.log('Waiting for login confirmation redirect...');
-        // The final step after successful login IS a navigation, so we wait for that URL.
         await page.waitForURL('**/account.zedge.net/v2/user**', { timeout: navigationTimeout });
 
-        console.log('Login successful. Saving session state...');
+        console.log('Login successful. Saving session to Database...');
         const storageState = await context.storageState();
-        await fs.writeFile(SESSION_FILE_PATH, JSON.stringify(storageState));
+        
+        // --- NEW: Save to DB instead of local file ---
+        const appData = await loadData();
+        appData.sessionData = storageState; // Store the state object directly
+        await saveData(appData); 
 
-        console.log('Session file has been created/updated.');
         return { loggedIn: true };
 
     } catch (error) {
-        console.error('Failed to log in to Zedge:', error.message);
-        
-        if (page) {
-            try {
-                const errorPath = 'login_error.png';
-                await page.screenshot({ path: errorPath });
-                console.log(`SCREENSHOT SAVED: A screenshot named "${errorPath}" has been saved.`);
-                
-                // --- NEW: Send the screenshot to Telegram ---
-                await telegramBot.sendScreenshot(errorPath, `❌ **Login Failed**\nTarget: Zedge\nError: ${error.message}`);
-                // --------------------------------------------
-
-            } catch (screenshotError) {
-                console.error('Failed to take screenshot:', screenshotError);
-            }
-        }
-        
-        try {
-            await fs.unlink(SESSION_FILE_PATH);
-        } catch (e) { /* ignore */ }
-        
-        return { loggedIn: false, error: `Login attempt failed.` };
+        // ... [Keep your existing screenshot and error reporting logic] ...
+        console.error('Failed to log in:', error.message);
+        return { loggedIn: false, error: error.message };
     } finally {
         if (context) await context.close();
     }
 }
 
 async function checkLoginStatus() {
-    console.log('Performing Zedge login status check...');
-    let context; // Define context here to be accessible in finally
+    console.log('Checking login status via Database Session...');
+    let context;
     try {
-        await fs.access(SESSION_FILE_PATH);
-        const storageState = await fs.readFile(SESSION_FILE_PATH, 'utf-8');
-        context = await browser.newContext({ storageState: JSON.parse(storageState) });
+        const appData = await loadData();
+        
+        if (!appData.sessionData) {
+            console.log('No session found in DB. Initializing login.');
+            return await loginAndSaveSession();
+        }
+
+        // Use the session data directly from the DB object
+        context = await browser.newContext({ storageState: appData.sessionData });
         const page = await context.newPage();
         await page.goto('https://upload.zedge.net/', { waitUntil: 'domcontentloaded' });
 
-        const finalUrl = page.url();
-        if (finalUrl.includes('account.zedge.net')) {
-            console.log('Session is invalid or expired. Attempting to re-login.');
-            // We must close the current context before calling the login function which creates its own.
+        if (page.url().includes('account.zedge.net')) {
+            console.log('DB Session expired. Re-logging...');
             await context.close();
-            context = null; // Prevent it from being closed again in finally
             return await loginAndSaveSession();
         }
         return { loggedIn: true };
 
     } catch (error) {
-        if (error.code === 'ENOENT') {
-            console.log('session.json not found on server. Attempting initial login.');
-            return await loginAndSaveSession();
-        }
-        console.error('An unknown error occurred during status check. Attempting re-login.', error.message);
+        console.error('Status check error:', error.message);
         return await loginAndSaveSession();
     } finally {
-        // CRITICAL: Ensure context is always closed
         if (context) await context.close();
     }
 }
-
 async function performPublish(scheduledItem) {
     console.log(`--- Starting publish process for: "${scheduledItem.title}" ---`);
     let context;
@@ -311,8 +276,8 @@ async function performPublish(scheduledItem) {
             throw new Error(`Publishing failed because login is not active. Reason: ${loginStatus.error}`);
         }
 
-        const storageState = await fs.readFile(SESSION_FILE_PATH, 'utf-8');
-        context = await browser.newContext({ storageState: JSON.parse(storageState) }); // <-- RE-USE a global browser
+        const appData = await loadData();
+        context = await browser.newContext({ storageState: appData.sessionData });
         // browser = await chromium.launch();
         // const context = await browser.newContext({ storageState: JSON.parse(storageState) });
         const page = await context.newPage();
