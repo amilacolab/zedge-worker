@@ -209,11 +209,38 @@ async function loginAndSaveSession() {
         page = await context.newPage();
         const navigationTimeout = 60000;
 
-        // ... [The existing login automation steps remain the same] ...
         await page.goto('https://account.zedge.net/v2/login-with-email', { waitUntil: 'domcontentloaded' });
-        await page.type('input[name="email"]', process.env.ZEDGE_EMAIL, { delay: 100 });
+
+        // --- UPDATED SECTION START ---
+        console.log('Filling email address...');
+        const emailInput = await page.waitForSelector('input[name="email"]', { timeout: navigationTimeout });
+
+        // Force clear the field and use .fill() for better reliability
+        await emailInput.click({ clickCount: 3 }); 
+        await emailInput.press('Backspace');
+        // Use .trim() to prevent hidden spaces in environment variables
+        await page.fill('input[name="email"]', process.env.ZEDGE_EMAIL.trim()); 
+
+        console.log(`Email entered: ${process.env.ZEDGE_EMAIL.trim()}`);
         await page.click('button:has-text("Continue with password")');
-        await page.waitForSelector('input[name="password"]', { timeout: navigationTimeout });
+
+        // Check if we hit the OTP page instead of the password page
+        try {
+            await page.waitForSelector('input[name="password"]', { timeout: 10000 });
+        } catch (e) {
+            const isVerifyPage = await page.isVisible('text=Verify email address');
+            if (isVerifyPage) {
+                // Take a screenshot of the verification page before failing
+                const errorScreenshotPath = 'login_otp_error.png';
+                await page.screenshot({ path: errorScreenshotPath });
+                await telegramBot.sendScreenshot(errorScreenshotPath, `❌ **Login Blocked:** Zedge is asking for an OTP. Email used: ${process.env.ZEDGE_EMAIL.trim()}`);
+                
+                throw new Error("Zedge triggered OTP Verification. This usually means the Email Address is unrecognized or wrong.");
+            }
+            throw e; 
+        }
+        // --- UPDATED SECTION END ---
+
         await page.fill('input[name="password"]', process.env.ZEDGE_PASSWORD);
         await page.click('button:has-text("Continue")');
         await page.waitForURL('**/account.zedge.net/v2/user**', { timeout: navigationTimeout });
@@ -221,15 +248,13 @@ async function loginAndSaveSession() {
         console.log('Login successful. Saving session to Database...');
         const storageState = await context.storageState();
         
-        // --- NEW: Save to DB instead of local file ---
         const appData = await loadData();
-        appData.sessionData = storageState; // Store the state object directly
+        appData.sessionData = storageState; 
         await saveData(appData); 
 
         return { loggedIn: true };
 
     } catch (error) {
-        // ... [Keep your existing screenshot and error reporting logic] ...
         console.error('Failed to log in:', error.message);
         return { loggedIn: false, error: error.message };
     } finally {
